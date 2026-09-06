@@ -8,6 +8,7 @@ class AskDto {
   maxOutputTokens?: number;
   stopSequence?: string;
   reasoningMode?: ReasoningMode;
+  temperature?: number;
 }
 
 @Controller('llm')
@@ -20,6 +21,7 @@ export class LlmController {
       format: body.format,
       maxOutputTokens: body.maxOutputTokens,
       stopSequence: body.stopSequence,
+      temperature: body.temperature,
     });
     return { answer };
   }

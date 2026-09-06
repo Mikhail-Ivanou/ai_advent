@@ -17,6 +17,7 @@ export default function ChatPage() {
   const [maxOutputTokens, setMaxOutputTokens] = useState('');
   const [stopSequence, setStopSequence] = useState('');
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('direct');
+  const [temperature, setTemperature] = useState('1');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +49,7 @@ export default function ChatPage() {
           maxOutputTokens: Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined,
           stopSequence: stopSequence.trim() || undefined,
           reasoningMode,
+          temperature: parseFloat(temperature),
         }),
       });
 
@@ -91,6 +93,22 @@ export default function ChatPage() {
             <option value="step-by-step">Step by step</option>
             <option value="self-prompt">Self-authored prompt</option>
             <option value="expert-panel">Expert panel</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-pine">Temperature</span>
+          <select
+            value={temperature}
+            onChange={(event) => setTemperature(event.target.value)}
+            className="rounded-md border border-black/10 px-2 py-1"
+            disabled={loading}
+          >
+            <option value="0">0</option>
+            <option value="0.7">0.7</option>
+            <option value="1">1 (default)</option>
+            <option value="1.2">1.2</option>
+            <option value="1.7">1.7</option>
           </select>
         </label>
 

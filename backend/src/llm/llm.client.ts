@@ -5,6 +5,8 @@ export interface AskOptions {
   maxOutputTokens?: number;
   /** Sequence/instruction that tells the model where to stop generating. */
   stopSequence?: string;
+  /** Sampling temperature — lower is more deterministic, higher is more creative. */
+  temperature?: number;
 }
 
 /**
@@ -47,6 +49,9 @@ export async function callLlm(prompt: string, options: AskOptions = {}): Promise
   }
   if (options.maxOutputTokens) {
     requestBody.max_tokens = options.maxOutputTokens;
+  }
+  if (options.temperature !== undefined) {
+    requestBody.temperature = options.temperature;
   }
 
   let response: Response;
