@@ -14,16 +14,16 @@ async function main() {
   console.log('=== Задача ===\n' + TASK + '\n');
 
   console.log('=== 1. Прямой ответ (без инструкций) ===');
-  console.log(await callLlmWithReasoning(TASK, 'direct'));
+  console.log((await callLlmWithReasoning(TASK, 'direct')).content);
 
   console.log('\n=== 2. С инструкцией «решай пошагово» ===');
-  console.log(await callLlmWithReasoning(TASK, 'step-by-step'));
+  console.log((await callLlmWithReasoning(TASK, 'step-by-step')).content);
 
   console.log('\n=== 3. Сначала промпт, потом решение по нему ===');
-  console.log(await callLlmWithReasoning(TASK, 'self-prompt'));
+  console.log((await callLlmWithReasoning(TASK, 'self-prompt')).content);
 
   console.log('\n=== 4. Группа экспертов (аналитик, инженер, критик) ===');
-  console.log(await callLlmWithReasoning(TASK, 'expert-panel'));
+  console.log((await callLlmWithReasoning(TASK, 'expert-panel')).content);
 }
 
 main().catch((error: Error) => {

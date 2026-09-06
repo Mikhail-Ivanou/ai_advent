@@ -2,13 +2,32 @@
 
 import { FormEvent, useState } from 'react';
 
+type Usage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
+  meta?: {
+    model: string;
+    responseTimeMs: number;
+    usage?: Usage;
+    costByn?: number;
+  };
 };
 
 type Format = 'text' | 'json';
 type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
+
+const MODELS = [
+  { value: 'deepseek-v4-flash', label: 'Слабая (deepseek-v4-flash)' },
+  { value: 'deepseek-chat-v3', label: 'Средняя (deepseek-chat-v3)' },
+  { value: 'kimi-k2.5', label: 'Средняя (kimi-k2.5)' },
+  { value: 'deepseek-v4-pro', label: 'Сильная (deepseek-v4-pro)' },
+] as const;
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -18,6 +37,7 @@ export default function ChatPage() {
   const [stopSequence, setStopSequence] = useState('');
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('direct');
   const [temperature, setTemperature] = useState('1');
+  const [model, setModel] = useState<string>(MODELS[0].value);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,6 +70,7 @@ export default function ChatPage() {
           stopSequence: stopSequence.trim() || undefined,
           reasoningMode,
           temperature: parseFloat(temperature),
+          model,
         }),
       });
 
@@ -57,8 +78,27 @@ export default function ChatPage() {
         throw new Error(`Backend error: ${response.status} ${await response.text()}`);
       }
 
-      const data: { answer: string } = await response.json();
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
+      const data: {
+        answer: string;
+        model: string;
+        responseTimeMs: number;
+        usage?: Usage;
+        costByn?: number;
+      } = await response.json();
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: data.answer,
+          meta: {
+            model: data.model,
+            responseTimeMs: data.responseTimeMs,
+            usage: data.usage,
+            costByn: data.costByn,
+          },
+        },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -93,6 +133,22 @@ export default function ChatPage() {
             <option value="step-by-step">Step by step</option>
             <option value="self-prompt">Self-authored prompt</option>
             <option value="expert-panel">Expert panel</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-pine">Model</span>
+          <select
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            className="rounded-md border border-black/10 px-2 py-1"
+            disabled={loading}
+          >
+            {MODELS.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -166,6 +222,15 @@ export default function ChatPage() {
             <p className="inline-block whitespace-pre-wrap rounded-lg bg-paper px-3 py-2">
               {message.content}
             </p>
+            {message.meta && (
+              <p className="mt-1 text-xs text-[#5c5c5c]">
+                {message.meta.model} · {(message.meta.responseTimeMs / 1000).toFixed(1)}с
+                {message.meta.usage && <> · {message.meta.usage.totalTokens} токенов</>}
+                {message.meta.costByn !== undefined && (
+                  <> · {message.meta.costByn.toFixed(5)} BYN</>
+                )}
+              </p>
+            )}
           </div>
         ))}
         {loading && <p className="text-[#5c5c5c]">Thinking…</p>}

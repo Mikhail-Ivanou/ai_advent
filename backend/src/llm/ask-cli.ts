@@ -8,8 +8,8 @@ async function main() {
     process.exit(1);
   }
 
-  const answer = await callLlm(prompt);
-  console.log(answer);
+  const result = await callLlm(prompt);
+  console.log(result.content);
 }
 
 main().catch((error: Error) => {

@@ -7,6 +7,37 @@ export interface AskOptions {
   stopSequence?: string;
   /** Sampling temperature — lower is more deterministic, higher is more creative. */
   temperature?: number;
+  /** Overrides LLM_MODEL for this call. */
+  model?: string;
+}
+
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface LlmResult {
+  content: string;
+  model: string;
+  usage?: LlmUsage;
+}
+
+/**
+ * BYN price per 1M tokens for each model this account has access to
+ * (from GET https://api.aiai.by/v1/models — update if pricing changes).
+ */
+const MODEL_PRICING_BYN_PER_1M: Record<string, { input: number; output: number }> = {
+  'deepseek-v4-flash': { input: 0.30338, output: 0.606759 },
+  'deepseek-chat-v3': { input: 0.8427, output: 3.3708 },
+  'kimi-k2.5': { input: 1.51686, output: 7.5843 },
+  'deepseek-v4-pro': { input: 2.21528, output: 5.85993 },
+};
+
+export function estimateCostByn(model: string, usage?: LlmUsage): number | undefined {
+  const pricing = MODEL_PRICING_BYN_PER_1M[model];
+  if (!pricing || !usage) return undefined;
+  return (usage.promptTokens / 1_000_000) * pricing.input + (usage.completionTokens / 1_000_000) * pricing.output;
 }
 
 /**
@@ -16,11 +47,11 @@ export interface AskOptions {
  * LLM_API_URL is the provider's base URL (e.g. https://api.openai.com/v1) —
  * "/chat/completions" is appended automatically.
  */
-export async function callLlm(prompt: string, options: AskOptions = {}): Promise<string> {
+export async function callLlm(prompt: string, options: AskOptions = {}): Promise<LlmResult> {
   const baseUrl = (process.env.LLM_API_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
   const apiUrl = `${baseUrl}/chat/completions`;
   const apiKey = process.env.LLM_API_KEY;
-  const model = process.env.LLM_MODEL ?? 'gpt-4o-mini';
+  const model = options.model ?? process.env.LLM_MODEL ?? 'gpt-4o-mini';
 
   if (!apiKey) {
     throw new Error('LLM_API_KEY is not set. Add it to backend/.env');
@@ -86,7 +117,24 @@ export async function callLlm(prompt: string, options: AskOptions = {}): Promise
     }
   }
 
-  return content;
+  const usage: LlmUsage | undefined = data.usage
+    ? {
+        promptTokens: data.usage.prompt_tokens ?? 0,
+        completionTokens: data.usage.completion_tokens ?? 0,
+        totalTokens: data.usage.total_tokens ?? 0,
+      }
+    : undefined;
+
+  return { content, model: data.model ?? model, usage };
+}
+
+function sumUsage(a?: LlmUsage, b?: LlmUsage): LlmUsage | undefined {
+  if (!a && !b) return undefined;
+  return {
+    promptTokens: (a?.promptTokens ?? 0) + (b?.promptTokens ?? 0),
+    completionTokens: (a?.completionTokens ?? 0) + (b?.completionTokens ?? 0),
+    totalTokens: (a?.totalTokens ?? 0) + (b?.totalTokens ?? 0),
+  };
 }
 
 export type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
@@ -100,21 +148,26 @@ export async function callLlmWithReasoning(
   task: string,
   mode: ReasoningMode = 'direct',
   options: AskOptions = {},
-): Promise<string> {
+): Promise<LlmResult> {
   switch (mode) {
     case 'step-by-step':
       return callLlm(`${task}\n\nРешай пошагово, подробно объясняя каждый шаг рассуждения.`, options);
 
     case 'self-prompt': {
-      const generatedPrompt = await callLlm(
+      const generated = await callLlm(
         `Ты — эксперт по составлению промптов для решения задач.
 Составь эффективный промпт-инструкцию, который поможет модели правильно и подробно решить задачу ниже.
 Выведи только сам промпт (инструкцию), без решения самой задачи.
 
 Задача: ${task}`,
+        { model: options.model },
       );
-      const answer = await callLlm(`${generatedPrompt}\n\nЗадача: ${task}`, options);
-      return `Сгенерированный промпт:\n${generatedPrompt}\n\nОтвет:\n${answer}`;
+      const answer = await callLlm(`${generated.content}\n\nЗадача: ${task}`, options);
+      return {
+        content: `Сгенерированный промпт:\n${generated.content}\n\nОтвет:\n${answer.content}`,
+        model: answer.model,
+        usage: sumUsage(generated.usage, answer.usage),
+      };
     }
 
     case 'expert-panel': {
@@ -134,11 +187,15 @@ export async function callLlmWithReasoning(
         },
       ];
 
-      const answers = await Promise.all(
+      const results = await Promise.all(
         experts.map(({ persona }) => callLlm(`${persona}\n\nЗадача: ${task}`, options)),
       );
 
-      return experts.map(({ role }, index) => `${role}:\n${answers[index]}`).join('\n\n');
+      return {
+        content: experts.map(({ role }, index) => `${role}:\n${results[index].content}`).join('\n\n'),
+        model: results[0]?.model ?? options.model ?? 'unknown',
+        usage: results.reduce<LlmUsage | undefined>((acc, r) => sumUsage(acc, r.usage), undefined),
+      };
     }
 
     case 'direct':
