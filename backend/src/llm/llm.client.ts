@@ -83,3 +83,61 @@ export async function callLlm(prompt: string, options: AskOptions = {}): Promise
 
   return content;
 }
+
+export type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
+
+/**
+ * Same task, four different reasoning strategies (see Day 3 exercise):
+ * a plain answer, an explicit "think step by step" instruction, a prompt the
+ * model writes for itself before solving, and a simulated expert panel.
+ */
+export async function callLlmWithReasoning(
+  task: string,
+  mode: ReasoningMode = 'direct',
+  options: AskOptions = {},
+): Promise<string> {
+  switch (mode) {
+    case 'step-by-step':
+      return callLlm(`${task}\n\nРешай пошагово, подробно объясняя каждый шаг рассуждения.`, options);
+
+    case 'self-prompt': {
+      const generatedPrompt = await callLlm(
+        `Ты — эксперт по составлению промптов для решения задач.
+Составь эффективный промпт-инструкцию, который поможет модели правильно и подробно решить задачу ниже.
+Выведи только сам промпт (инструкцию), без решения самой задачи.
+
+Задача: ${task}`,
+      );
+      const answer = await callLlm(`${generatedPrompt}\n\nЗадача: ${task}`, options);
+      return `Сгенерированный промпт:\n${generatedPrompt}\n\nОтвет:\n${answer}`;
+    }
+
+    case 'expert-panel': {
+      const experts = [
+        {
+          role: 'Аналитик',
+          persona: 'Ты — аналитик. Формально разбери условия и ограничения задачи, затем дай своё решение.',
+        },
+        {
+          role: 'Инженер',
+          persona: 'Ты — инженер. Предложи конкретный практический пошаговый способ решения задачи.',
+        },
+        {
+          role: 'Критик',
+          persona:
+            'Ты — критик. Реши задачу, уделяя особое внимание поиску возможных ошибок и слабых мест в рассуждении.',
+        },
+      ];
+
+      const answers = await Promise.all(
+        experts.map(({ persona }) => callLlm(`${persona}\n\nЗадача: ${task}`, options)),
+      );
+
+      return experts.map(({ role }, index) => `${role}:\n${answers[index]}`).join('\n\n');
+    }
+
+    case 'direct':
+    default:
+      return callLlm(task, options);
+  }
+}

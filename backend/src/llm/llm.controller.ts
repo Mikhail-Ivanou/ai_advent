@@ -1,4 +1,5 @@
 import { Body, Controller, Post } from '@nestjs/common';
+import { ReasoningMode } from './llm.client';
 import { LlmService } from './llm.service';
 
 class AskDto {
@@ -6,6 +7,7 @@ class AskDto {
   format?: 'text' | 'json';
   maxOutputTokens?: number;
   stopSequence?: string;
+  reasoningMode?: ReasoningMode;
 }
 
 @Controller('llm')
@@ -14,7 +16,7 @@ export class LlmController {
 
   @Post('ask')
   async ask(@Body() body: AskDto): Promise<{ answer: string }> {
-    const answer = await this.llmService.ask(body.prompt, {
+    const answer = await this.llmService.ask(body.prompt, body.reasoningMode, {
       format: body.format,
       maxOutputTokens: body.maxOutputTokens,
       stopSequence: body.stopSequence,

@@ -1,13 +1,13 @@
 import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
-import { AskOptions, callLlm } from './llm.client';
+import { AskOptions, ReasoningMode, callLlmWithReasoning } from './llm.client';
 
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
 
-  async ask(prompt: string, options?: AskOptions): Promise<string> {
+  async ask(prompt: string, reasoningMode?: ReasoningMode, options?: AskOptions): Promise<string> {
     try {
-      const answer = await callLlm(prompt, options);
+      const answer = await callLlmWithReasoning(prompt, reasoningMode, options);
       console.log('LLM response:', answer);
       return answer;
     } catch (error) {

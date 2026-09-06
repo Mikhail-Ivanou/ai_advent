@@ -8,6 +8,7 @@ type Message = {
 };
 
 type Format = 'text' | 'json';
+type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -15,8 +16,15 @@ export default function ChatPage() {
   const [format, setFormat] = useState<Format>('text');
   const [maxOutputTokens, setMaxOutputTokens] = useState('');
   const [stopSequence, setStopSequence] = useState('');
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('direct');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function resetChat() {
+    setMessages([]);
+    setInput('');
+    setError(null);
+  }
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
@@ -39,6 +47,7 @@ export default function ChatPage() {
           format,
           maxOutputTokens: Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined,
           stopSequence: stopSequence.trim() || undefined,
+          reasoningMode,
         }),
       });
 
@@ -57,9 +66,34 @@ export default function ChatPage() {
 
   return (
     <main className="mx-auto flex h-screen max-w-2xl flex-col gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
-      <h1 className="shrink-0 text-2xl font-medium">Chat</h1>
+      <div className="shrink-0 flex items-center justify-between">
+        <h1 className="text-2xl font-medium">Chat</h1>
+        <button
+          type="button"
+          onClick={resetChat}
+          disabled={loading || messages.length === 0}
+          className="rounded-md border border-black/10 px-3 py-1 text-sm text-ink hover:bg-black/5 disabled:opacity-50"
+        >
+          Reset
+        </button>
+      </div>
 
       <div className="shrink-0 flex flex-wrap gap-4 rounded-lg border border-black/10 bg-white p-4 text-sm">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-pine">Reasoning mode</span>
+          <select
+            value={reasoningMode}
+            onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}
+            className="rounded-md border border-black/10 px-2 py-1"
+            disabled={loading}
+          >
+            <option value="direct">Direct answer</option>
+            <option value="step-by-step">Step by step</option>
+            <option value="self-prompt">Self-authored prompt</option>
+            <option value="expert-panel">Expert panel</option>
+          </select>
+        </label>
+
         <label className="flex flex-col gap-1">
           <span className="text-xs text-pine">Response format</span>
           <select

@@ -10,7 +10,8 @@
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "test": "jest",
-    "ask": "ts-node -r tsconfig-paths/register src/llm/ask-cli.ts"
+    "ask": "ts-node -r tsconfig-paths/register src/llm/ask-cli.ts",
+    "reasoning-demo": "ts-node -r tsconfig-paths/register src/llm/reasoning-demo-cli.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
