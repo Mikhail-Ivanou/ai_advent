@@ -7,9 +7,14 @@ type Message = {
   content: string;
 };
 
+type Format = 'text' | 'json';
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [format, setFormat] = useState<Format>('text');
+  const [maxOutputTokens, setMaxOutputTokens] = useState('');
+  const [stopSequence, setStopSequence] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,11 +28,18 @@ export default function ChatPage() {
     setLoading(true);
     setError(null);
 
+    const parsedMaxTokens = parseInt(maxOutputTokens, 10);
+
     try {
       const response = await fetch('/api/backend/llm/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({
+          prompt,
+          format,
+          maxOutputTokens: Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined,
+          stopSequence: stopSequence.trim() || undefined,
+        }),
       });
 
       if (!response.ok) {
@@ -44,12 +56,52 @@ export default function ChatPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-4 bg-paper px-6 py-10 text-ink">
-      <h1 className="text-2xl font-medium">Chat</h1>
+    <main className="mx-auto flex h-screen max-w-2xl flex-col gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
+      <h1 className="shrink-0 text-2xl font-medium">Chat</h1>
 
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-black/10 bg-white p-4">
+      <div className="shrink-0 flex flex-wrap gap-4 rounded-lg border border-black/10 bg-white p-4 text-sm">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-pine">Response format</span>
+          <select
+            value={format}
+            onChange={(event) => setFormat(event.target.value as Format)}
+            className="rounded-md border border-black/10 px-2 py-1"
+            disabled={loading}
+          >
+            <option value="text">Plain text</option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-pine">Max output tokens</span>
+          <input
+            type="number"
+            min={1}
+            value={maxOutputTokens}
+            onChange={(event) => setMaxOutputTokens(event.target.value)}
+            placeholder="No limit"
+            className="w-32 rounded-md border border-black/10 px-2 py-1"
+            disabled={loading}
+          />
+        </label>
+
+        <label className="flex flex-1 min-w-[12rem] flex-col gap-1">
+          <span className="text-xs text-pine">Stop sequence / instruction</span>
+          <input
+            type="text"
+            value={stopSequence}
+            onChange={(event) => setStopSequence(event.target.value)}
+            placeholder='e.g. "###" or "stop after the summary"'
+            className="rounded-md border border-black/10 px-2 py-1"
+            disabled={loading}
+          />
+        </label>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-black/10 bg-white p-4 text-sm">
         {messages.length === 0 && (
-          <p className="text-sm text-[#5c5c5c]">Ask the LLM something to get started.</p>
+          <p className="text-[#5c5c5c]">Ask the LLM something to get started.</p>
         )}
         {messages.map((message, index) => (
           <div
@@ -64,12 +116,12 @@ export default function ChatPage() {
             </p>
           </div>
         ))}
-        {loading && <p className="text-sm text-[#5c5c5c]">Thinking…</p>}
+        {loading && <p className="text-[#5c5c5c]">Thinking…</p>}
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="shrink-0 text-sm text-red-600">{error}</p>}
 
-      <form onSubmit={sendMessage} className="flex gap-2">
+      <form onSubmit={sendMessage} className="shrink-0 flex gap-2">
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}

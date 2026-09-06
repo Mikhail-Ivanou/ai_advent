@@ -1,3 +1,12 @@
+export interface AskOptions {
+  /** Desired response format: freeform prose, or a single JSON object. */
+  format?: 'text' | 'json';
+  /** Upper bound on the number of tokens the model may generate. */
+  maxOutputTokens?: number;
+  /** Sequence/instruction that tells the model where to stop generating. */
+  stopSequence?: string;
+}
+
 /**
  * Minimal OpenAI-compatible chat completion call.
  * Works with OpenAI, OpenRouter, Groq, and other providers exposing the same API shape —
@@ -5,7 +14,7 @@
  * LLM_API_URL is the provider's base URL (e.g. https://api.openai.com/v1) —
  * "/chat/completions" is appended automatically.
  */
-export async function callLlm(prompt: string): Promise<string> {
+export async function callLlm(prompt: string, options: AskOptions = {}): Promise<string> {
   const baseUrl = (process.env.LLM_API_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
   const apiUrl = `${baseUrl}/chat/completions`;
   const apiKey = process.env.LLM_API_KEY;
@@ -13,6 +22,31 @@ export async function callLlm(prompt: string): Promise<string> {
 
   if (!apiKey) {
     throw new Error('LLM_API_KEY is not set. Add it to backend/.env');
+  }
+
+  const instructions = ['Always reply in the same language the user wrote their message in.'];
+  instructions.push(
+    options.format === 'json'
+      ? 'Respond with a single valid JSON object only — no prose, no markdown code fences.'
+      : 'Respond in plain text — no JSON, no markdown formatting.',
+  );
+  if (options.stopSequence) {
+    instructions.push(`Stop writing immediately after you output: "${options.stopSequence}"`);
+  }
+
+  const requestBody: Record<string, unknown> = {
+    model,
+    messages: [
+      { role: 'system', content: instructions.join(' ') },
+      { role: 'user', content: prompt },
+    ],
+  };
+
+  if (options.format === 'json') {
+    requestBody.response_format = { type: 'json_object' };
+  }
+  if (options.maxOutputTokens) {
+    requestBody.max_tokens = options.maxOutputTokens;
   }
 
   let response: Response;
@@ -23,16 +57,7 @@ export async function callLlm(prompt: string): Promise<string> {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: 'system',
-            content: 'Always reply in the same language the user wrote their message in.',
-          },
-          { role: 'user', content: prompt },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
     });
   } catch (error) {
     const errorCause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
@@ -45,5 +70,16 @@ export async function callLlm(prompt: string): Promise<string> {
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? '';
+  let content: string = data.choices?.[0]?.message?.content ?? '';
+
+  // Hard stop: truncate right after the stop sequence ourselves, since not every
+  // provider honors an instruction to stop generating on its own.
+  if (options.stopSequence) {
+    const stopIndex = content.indexOf(options.stopSequence);
+    if (stopIndex !== -1) {
+      content = content.slice(0, stopIndex + options.stopSequence.length);
+    }
+  }
+
+  return content;
 }
