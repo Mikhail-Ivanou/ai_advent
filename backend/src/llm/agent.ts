@@ -1,4 +1,14 @@
 import { AskOptions, ChatMessage, LlmUsage, ReasoningMode, callLlmWithReasoning, estimateCostByn } from './llm.client';
+import { countHistoryTokens, countTokens } from './tokenizer';
+
+export interface TokenCounts {
+  /** Tokens in the new user prompt alone. */
+  requestTokens: number;
+  /** Tokens in the conversation history sent along with this request (excludes the new prompt). */
+  historyTokens: number;
+  /** Tokens in the model's reply. */
+  responseTokens: number;
+}
 
 export interface AgentAskResult {
   answer: string;
@@ -6,6 +16,7 @@ export interface AgentAskResult {
   responseTimeMs: number;
   usage?: LlmUsage;
   costByn?: number;
+  tokens: TokenCounts;
 }
 
 /**
@@ -24,13 +35,24 @@ export class Agent {
   ) {}
 
   async ask(prompt: string, reasoningMode?: ReasoningMode, options?: AskOptions): Promise<AgentAskResult> {
+    const requestTokens = countTokens(prompt);
+    const historyTokens = countHistoryTokens(this.history);
+
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, { ...options, history: this.history });
     const responseTimeMs = Date.now() - start;
     const costByn = estimateCostByn(result.model, result.usage);
+    const responseTokens = countTokens(result.content);
 
     this.history.push({ role: 'user', content: prompt }, { role: 'assistant', content: result.content });
 
-    return { answer: result.content, model: result.model, responseTimeMs, usage: result.usage, costByn };
+    return {
+      answer: result.content,
+      model: result.model,
+      responseTimeMs,
+      usage: result.usage,
+      costByn,
+      tokens: { requestTokens, historyTokens, responseTokens },
+    };
   }
 }

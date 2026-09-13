@@ -8,6 +8,12 @@ type Usage = {
   totalTokens: number;
 };
 
+type TokenCounts = {
+  requestTokens: number;
+  historyTokens: number;
+  responseTokens: number;
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -16,7 +22,20 @@ type Message = {
     responseTimeMs: number;
     usage?: Usage;
     costByn?: number;
+    tokens: TokenCounts;
   };
+};
+
+type Format = 'text' | 'json';
+type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
+
+type ChatSettings = {
+  format: Format;
+  maxOutputTokens: string;
+  stopSequence: string;
+  reasoningMode: ReasoningMode;
+  temperature: string;
+  model: string;
 };
 
 type Chat = {
@@ -24,19 +43,31 @@ type Chat = {
   title: string;
   createdAt: number;
   messages: Message[];
+  settings: ChatSettings;
 };
-
-type Format = 'text' | 'json';
-type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
 
 const MODELS = [
   { value: 'deepseek-v4-flash', label: 'Слабая (deepseek-v4-flash)' },
   { value: 'deepseek-chat-v3', label: 'Средняя (deepseek-chat-v3)' },
   { value: 'kimi-k2.5', label: 'Средняя (kimi-k2.5)' },
   { value: 'deepseek-v4-pro', label: 'Сильная (deepseek-v4-pro)' },
+  { value: 'gpt-3.5-turbo-instruct', label: 'Малое окно (gpt-3.5-turbo-instruct, 4k)' },
+  { value: 'deepseek-r1-distill-llama-70b', label: 'Малое окно, ближе к DeepSeek (deepseek-r1-distill-llama-70b, 8k)' },
+  { value: 'qwen-2.5-72b-instruct', label: 'Малое окно, быстрее (qwen-2.5-72b-instruct, 32k)' },
 ] as const;
 
 const STORAGE_KEY = 'advent.chats';
+
+function defaultSettings(): ChatSettings {
+  return {
+    format: 'text',
+    maxOutputTokens: '',
+    stopSequence: '',
+    reasoningMode: 'direct',
+    temperature: '1',
+    model: MODELS[0].value,
+  };
+}
 
 function createChat(): Chat {
   return {
@@ -44,7 +75,13 @@ function createChat(): Chat {
     title: 'Новый чат',
     createdAt: Date.now(),
     messages: [],
+    settings: defaultSettings(),
   };
+}
+
+// Older persisted chats may not have a `settings` field yet — backfill defaults.
+function normalizeChat(chat: Chat): Chat {
+  return { ...chat, settings: { ...defaultSettings(), ...chat.settings } };
 }
 
 function chatTitle(chat: Chat): string {
@@ -66,12 +103,6 @@ export default function ChatPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [input, setInput] = useState('');
-  const [format, setFormat] = useState<Format>('text');
-  const [maxOutputTokens, setMaxOutputTokens] = useState('');
-  const [stopSequence, setStopSequence] = useState('');
-  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('direct');
-  const [temperature, setTemperature] = useState('1');
-  const [model, setModel] = useState<string>(MODELS[0].value);
 
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
@@ -83,6 +114,7 @@ export default function ChatPage() {
       loaded = [];
     }
     if (loaded.length === 0) loaded = [createChat()];
+    loaded = loaded.map(normalizeChat);
     setChats(loaded);
     setActiveChatId(loaded[0].id);
     setHydrated(true);
@@ -97,6 +129,17 @@ export default function ChatPage() {
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const isActiveLoading = activeChatId ? loadingChatIds.has(activeChatId) : false;
   const activeError = activeChatId ? (errors[activeChatId] ?? null) : null;
+
+  const chatTotals = (activeChat?.messages ?? []).reduce(
+    (totals, message) => {
+      if (!message.meta) return totals;
+      return {
+        apiTokens: totals.apiTokens + (message.meta.usage?.totalTokens ?? 0),
+        costByn: totals.costByn + (message.meta.costByn ?? 0),
+      };
+    },
+    { apiTokens: 0, costByn: 0 },
+  );
 
   function newChat() {
     const chat = createChat();
@@ -139,6 +182,12 @@ export default function ChatPage() {
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, messages: updater(c.messages) } : c)));
   }
 
+  function updateSettings(chatId: string, patch: Partial<ChatSettings>) {
+    setChats((prev) =>
+      prev.map((c) => (c.id === chatId ? { ...c, settings: { ...c.settings, ...patch } } : c)),
+    );
+  }
+
   function setChatLoading(chatId: string, isLoading: boolean) {
     setLoadingChatIds((prev) => {
       const next = new Set(prev);
@@ -163,12 +212,14 @@ export default function ChatPage() {
     const prompt = input.trim();
     if (!prompt || !chatId || loadingChatIds.has(chatId)) return;
 
+    const settings = chats.find((c) => c.id === chatId)?.settings ?? defaultSettings();
+
     updateMessages(chatId, (messages) => [...messages, { role: 'user', content: prompt }]);
     setInput('');
     setChatLoading(chatId, true);
     setChatError(chatId, null);
 
-    const parsedMaxTokens = parseInt(maxOutputTokens, 10);
+    const parsedMaxTokens = parseInt(settings.maxOutputTokens, 10);
 
     try {
       const response = await fetch(`/api/backend/agents/${chatId}/ask`, {
@@ -176,12 +227,12 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
-          format,
+          format: settings.format,
           maxOutputTokens: Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined,
-          stopSequence: stopSequence.trim() || undefined,
-          reasoningMode,
-          temperature: parseFloat(temperature),
-          model,
+          stopSequence: settings.stopSequence.trim() || undefined,
+          reasoningMode: settings.reasoningMode,
+          temperature: parseFloat(settings.temperature),
+          model: settings.model,
         }),
       });
 
@@ -195,6 +246,7 @@ export default function ChatPage() {
         responseTimeMs: number;
         usage?: Usage;
         costByn?: number;
+        tokens: TokenCounts;
       } = await response.json();
 
       updateMessages(chatId, (messages) => [
@@ -207,6 +259,7 @@ export default function ChatPage() {
             responseTimeMs: data.responseTimeMs,
             usage: data.usage,
             costByn: data.costByn,
+            tokens: data.tokens,
           },
         },
       ]);
@@ -220,6 +273,8 @@ export default function ChatPage() {
   if (!hydrated || !activeChat) {
     return null;
   }
+
+  const settings = activeChat.settings;
 
   return (
     <main className="mx-auto flex h-screen max-w-5xl gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
@@ -271,8 +326,10 @@ export default function ChatPage() {
           <label className="flex flex-col gap-1">
             <span className="text-xs text-pine">Reasoning mode</span>
             <select
-              value={reasoningMode}
-              onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}
+              value={settings.reasoningMode}
+              onChange={(event) =>
+                updateSettings(activeChat.id, { reasoningMode: event.target.value as ReasoningMode })
+              }
               className="rounded-md border border-black/10 px-2 py-1"
               disabled={isActiveLoading}
             >
@@ -286,8 +343,8 @@ export default function ChatPage() {
           <label className="flex flex-col gap-1">
             <span className="text-xs text-pine">Model</span>
             <select
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
+              value={settings.model}
+              onChange={(event) => updateSettings(activeChat.id, { model: event.target.value })}
               className="rounded-md border border-black/10 px-2 py-1"
               disabled={isActiveLoading}
             >
@@ -302,8 +359,8 @@ export default function ChatPage() {
           <label className="flex flex-col gap-1">
             <span className="text-xs text-pine">Temperature</span>
             <select
-              value={temperature}
-              onChange={(event) => setTemperature(event.target.value)}
+              value={settings.temperature}
+              onChange={(event) => updateSettings(activeChat.id, { temperature: event.target.value })}
               className="rounded-md border border-black/10 px-2 py-1"
               disabled={isActiveLoading}
             >
@@ -318,8 +375,8 @@ export default function ChatPage() {
           <label className="flex flex-col gap-1">
             <span className="text-xs text-pine">Response format</span>
             <select
-              value={format}
-              onChange={(event) => setFormat(event.target.value as Format)}
+              value={settings.format}
+              onChange={(event) => updateSettings(activeChat.id, { format: event.target.value as Format })}
               className="rounded-md border border-black/10 px-2 py-1"
               disabled={isActiveLoading}
             >
@@ -333,8 +390,8 @@ export default function ChatPage() {
             <input
               type="number"
               min={1}
-              value={maxOutputTokens}
-              onChange={(event) => setMaxOutputTokens(event.target.value)}
+              value={settings.maxOutputTokens}
+              onChange={(event) => updateSettings(activeChat.id, { maxOutputTokens: event.target.value })}
               placeholder="No limit"
               className="w-32 rounded-md border border-black/10 px-2 py-1"
               disabled={isActiveLoading}
@@ -345,8 +402,8 @@ export default function ChatPage() {
             <span className="text-xs text-pine">Stop sequence / instruction</span>
             <input
               type="text"
-              value={stopSequence}
-              onChange={(event) => setStopSequence(event.target.value)}
+              value={settings.stopSequence}
+              onChange={(event) => updateSettings(activeChat.id, { stopSequence: event.target.value })}
               placeholder='e.g. "###" or "stop after the summary"'
               className="rounded-md border border-black/10 px-2 py-1"
               disabled={isActiveLoading}
@@ -370,18 +427,29 @@ export default function ChatPage() {
                 {message.content}
               </p>
               {message.meta && (
-                <p className="mt-1 text-xs text-[#5c5c5c]">
-                  {message.meta.model} · {(message.meta.responseTimeMs / 1000).toFixed(1)}с
-                  {message.meta.usage && <> · {message.meta.usage.totalTokens} токенов</>}
-                  {message.meta.costByn !== undefined && (
-                    <> · {message.meta.costByn.toFixed(5)} BYN</>
-                  )}
-                </p>
+                <>
+                  <p className="mt-1 text-xs text-[#5c5c5c]">
+                    {message.meta.model} · {(message.meta.responseTimeMs / 1000).toFixed(1)}с
+                    {message.meta.usage && <> · {message.meta.usage.totalTokens} токенов</>}
+                    {message.meta.costByn !== undefined && (
+                      <> · {message.meta.costByn.toFixed(5)} BYN</>
+                    )}
+                  </p>
+                  <p className="text-xs text-[#5c5c5c]">
+                    запрос: {message.meta.tokens.requestTokens} · ответ: {message.meta.tokens.responseTokens} токенов
+                  </p>
+                </>
               )}
             </div>
           ))}
           {isActiveLoading && <p className="text-[#5c5c5c]">Thinking…</p>}
         </div>
+
+        {activeChat.messages.length > 0 && (
+          <p className="shrink-0 text-xs text-[#5c5c5c]">
+            Итого по чату: {chatTotals.apiTokens} токенов (по данным API) · {chatTotals.costByn.toFixed(5)} BYN
+          </p>
+        )}
 
         {activeError && <p className="shrink-0 text-sm text-red-600">{activeError}</p>}
 

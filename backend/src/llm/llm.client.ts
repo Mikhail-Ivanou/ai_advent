@@ -39,6 +39,9 @@ const MODEL_PRICING_BYN_PER_1M: Record<string, { input: number; output: number }
   'deepseek-chat-v3': { input: 0.8427, output: 3.3708 },
   'kimi-k2.5': { input: 1.51686, output: 7.5843 },
   'deepseek-v4-pro': { input: 2.21528, output: 5.85993 },
+  'gpt-3.5-turbo-instruct': { input: 5.0562, output: 6.7416 },
+  'deepseek-r1-distill-llama-70b': { input: 2.69664, output: 2.69664 },
+  'qwen-2.5-72b-instruct': { input: 1.21349, output: 1.34832 },
 };
 
 export function estimateCostByn(model: string, usage?: LlmUsage): number | undefined {
