@@ -4,6 +4,11 @@ import { AgentsService } from './agents.service';
 import { AskDto } from './ask.dto';
 import { ChatMessage } from './llm.client';
 
+class CreateBranchDto {
+  name: string;
+  fromBranchId?: string;
+}
+
 @Controller('agents')
 export class AgentsController {
   constructor(private readonly agentsService: AgentsService) {}
@@ -22,7 +27,7 @@ export class AgentsController {
           temperature: body.temperature,
           model: body.model,
         },
-        body.compression,
+        body.context,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';
@@ -33,6 +38,44 @@ export class AgentsController {
   @Get(':id/messages')
   getMessages(@Param('id') id: string): { messages: ChatMessage[] } {
     return { messages: this.agentsService.getHistory(id) };
+  }
+
+  @Get(':id/branches')
+  getBranches(@Param('id') id: string): { branches: { id: string; messageCount: number }[]; activeBranchId: string } {
+    return this.agentsService.listBranches(id);
+  }
+
+  @Post(':id/branches')
+  async createBranch(@Param('id') id: string, @Body() body: CreateBranchDto): Promise<{ created: true }> {
+    try {
+      await this.agentsService.createBranch(id, body.name, body.fromBranchId);
+      return { created: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not create branch';
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Post(':id/branches/:branchId/switch')
+  async switchBranch(@Param('id') id: string, @Param('branchId') branchId: string): Promise<{ switched: true }> {
+    try {
+      await this.agentsService.switchBranch(id, branchId);
+      return { switched: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not switch branch';
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Delete(':id/branches/:branchId')
+  async deleteBranch(@Param('id') id: string, @Param('branchId') branchId: string): Promise<{ deleted: true }> {
+    try {
+      await this.agentsService.deleteBranch(id, branchId);
+      return { deleted: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not delete branch';
+      throw new BadGatewayException(message);
+    }
   }
 
   @Delete(':id')

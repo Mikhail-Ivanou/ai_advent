@@ -1,4 +1,4 @@
-import { CompressionSettings } from './agent';
+import { ContextConfig } from './agent';
 import { ReasoningMode } from './llm.client';
 
 export class AskDto {
@@ -9,6 +9,6 @@ export class AskDto {
   reasoningMode?: ReasoningMode;
   temperature?: number;
   model?: string;
-  /** History compression: keep the last N messages verbatim, summarize the rest. */
-  compression?: CompressionSettings;
+  /** Which context-management strategy to use for this turn. */
+  context?: ContextConfig;
 }

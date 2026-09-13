@@ -13,28 +13,37 @@ import { countHistoryTokens, countTokens } from './tokenizer';
 export interface TokenCounts {
   /** Tokens in the new user prompt alone. */
   requestTokens: number;
-  /** Tokens in the context actually sent with this request (recent history and/or summary, excludes the new prompt). */
+  /** Tokens in the context actually sent with this request (recent history, summary and/or facts — excludes the new prompt). */
   historyTokens: number;
   /** Tokens in the model's reply. */
   responseTokens: number;
 }
 
-export interface CompressionSettings {
-  enabled: boolean;
-  /** How many of the most recent messages to keep verbatim. */
+export type ContextStrategy = 'none' | 'sliding-window' | 'summary' | 'sticky-facts' | 'branching';
+
+export interface ContextConfig {
+  strategy: ContextStrategy;
+  /** How many of the most recent messages to keep verbatim (sliding-window, summary, sticky-facts). */
   keepLastN: number;
 }
 
-export interface CompressionInfo {
-  enabled: boolean;
+export interface ContextInfo {
+  strategy: ContextStrategy;
   keepLastN: number;
-  /** How many older messages have been folded into `summary`. */
-  summarizedMessageCount: number;
-  /** How many recent messages are still kept verbatim. */
+  /** How many recent messages are sent verbatim. */
   recentMessageCount: number;
-  summary: string;
+  /** summary strategy only: how many older messages have been folded into `summary`. */
+  summarizedMessageCount?: number;
+  summary?: string;
   /** Present only on a turn that actually triggered a summary update. */
   summaryUpdate?: { usage?: LlmUsage; costByn?: number };
+  /** sticky-facts strategy only: the current key-value memory. */
+  facts?: Record<string, string>;
+  /** Present only on a turn that actually triggered a facts update. */
+  factsUpdate?: { usage?: LlmUsage; costByn?: number };
+  /** branching strategy only. */
+  activeBranchId?: string;
+  branches?: { id: string; messageCount: number }[];
 }
 
 export interface AgentAskResult {
@@ -44,8 +53,8 @@ export interface AgentAskResult {
   usage?: LlmUsage;
   costByn?: number;
   tokens: TokenCounts;
-  compression?: CompressionInfo;
-  /** The exact request(s) sent to the API for this turn, including any compaction summarization calls. */
+  context?: ContextInfo;
+  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction calls. */
   requests: LlmRequestLog[];
 }
 
@@ -86,52 +95,180 @@ ${formatChunkForSummary(chunk)}
   return { summary: result.content.trim(), usage: result.usage, costByn, requests: result.requests };
 }
 
+function formatFacts(facts: Record<string, string>): string {
+  const entries = Object.entries(facts);
+  if (entries.length === 0) return '(пока ничего не известно)';
+  return entries.map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+async function updateFacts(
+  existingFacts: Record<string, string>,
+  userMessage: string,
+  model?: string,
+): Promise<{ facts: Record<string, string>; usage?: LlmUsage; costByn?: number; requests: LlmRequestLog[] }> {
+  const prompt = `Ты ведёшь структурированную память диалога в виде пар ключ-значение (JSON-объект).
+Текущие факты:
+${formatFacts(existingFacts)}
+
+Новое сообщение пользователя:
+"""
+${userMessage}
+"""
+
+Обнови факты с учётом этого сообщения: добавь новые ключи для целей, ограничений, предпочтений, решений и договорённостей, если они появились; обнови значения существующих ключей, если они изменились. Не удаляй ключи, которые новое сообщение не отменяет.
+Верни ТОЛЬКО валидный JSON-объект (ключи и значения — строки), без пояснений и markdown.`;
+
+  const result = await callLlm(
+    prompt,
+    { model, format: 'json', temperature: 0.1, maxOutputTokens: 500 },
+    'sticky-facts:update',
+  );
+  const costByn = estimateCostByn(result.model, result.usage);
+
+  let facts = existingFacts;
+  try {
+    const parsed = JSON.parse(result.content);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      facts = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
+    }
+  } catch {
+    // Model didn't return valid JSON this turn — keep the facts we already had.
+  }
+
+  return { facts, usage: result.usage, costByn, requests: result.requests };
+}
+
 /**
  * Encapsulates a request/response cycle with the LLM: takes a user prompt,
- * calls the API with whatever conversation history it has been given, and
- * shapes the reply — so callers never talk to callLlm* directly.
+ * calls the API with whatever context the active strategy decides to include,
+ * and shapes the reply — so callers never talk to callLlm* directly.
  *
- * `history` keeps the full conversation log for the record. When history
- * compression is on, only the last `keepLastN` messages are sent verbatim —
- * everything older is folded into a running `summary` (in chunks of up to
- * COMPACTION_BATCH_SIZE messages) and that summary is sent instead of the raw text.
+ * Context strategies (mutually exclusive, picked per request):
+ * - none: send the full conversation, no management.
+ * - sliding-window: send only the last `keepLastN` messages; everything older
+ *   is simply not sent (still kept in `history` for the record).
+ * - summary: last `keepLastN`-ish messages verbatim + a running summary of
+ *   everything older (see Day 9).
+ * - sticky-facts: a key-value memory (`facts`), refreshed from every new user
+ *   message, sent alongside the last `keepLastN` messages instead of a summary.
+ * - branching: `history` is a checked-out branch of a tree (`branches`) —
+ *   independent conversations that share a common prefix up to the point they
+ *   were forked. The full active branch is sent, unmanaged.
  *
  * State lives on the instance only; callers that want it to survive a
  * restart are responsible for loading it in and persisting it back out
  * (see AgentsService).
  */
 export class Agent {
+  branches: Record<string, ChatMessage[]>;
+  activeBranchId: string;
+  summary: string;
+  summarizedThroughIndex: number;
+  facts: Record<string, string>;
+
   constructor(
     readonly id: string,
-    public history: ChatMessage[] = [],
-    public summary: string = '',
-    public summarizedThroughIndex: number = 0,
-  ) {}
+    branches: Record<string, ChatMessage[]> = { main: [] },
+    activeBranchId: string = 'main',
+    summary: string = '',
+    summarizedThroughIndex: number = 0,
+    facts: Record<string, string> = {},
+  ) {
+    this.branches = branches;
+    this.activeBranchId = activeBranchId;
+    this.summary = summary;
+    this.summarizedThroughIndex = summarizedThroughIndex;
+    this.facts = facts;
+  }
+
+  /** The active branch's messages — a live reference, so pushing onto it mutates `branches` directly. */
+  get history(): ChatMessage[] {
+    if (!this.branches[this.activeBranchId]) this.branches[this.activeBranchId] = [];
+    return this.branches[this.activeBranchId];
+  }
+
+  createBranch(name: string, fromBranchId?: string): void {
+    if (this.branches[name]) throw new Error(`Branch "${name}" already exists`);
+    const source = this.branches[fromBranchId ?? this.activeBranchId] ?? [];
+    this.branches[name] = [...source];
+  }
+
+  switchBranch(branchId: string): void {
+    if (!this.branches[branchId]) throw new Error(`Unknown branch: ${branchId}`);
+    this.activeBranchId = branchId;
+  }
+
+  deleteBranch(branchId: string): void {
+    if (Object.keys(this.branches).length <= 1) throw new Error('Cannot delete the only remaining branch');
+    if (!this.branches[branchId]) throw new Error(`Unknown branch: ${branchId}`);
+    delete this.branches[branchId];
+    if (this.activeBranchId === branchId) {
+      this.activeBranchId = Object.keys(this.branches)[0];
+    }
+  }
+
+  listBranches(): { id: string; messageCount: number }[] {
+    return Object.entries(this.branches).map(([id, messages]) => ({ id, messageCount: messages.length }));
+  }
 
   async ask(
     prompt: string,
     reasoningMode?: ReasoningMode,
     options?: AskOptions,
-    compression?: CompressionSettings,
+    contextConfig?: ContextConfig,
   ): Promise<AgentAskResult> {
-    const keepLastN = Math.max(0, compression?.keepLastN ?? 0);
-    const useCompression = Boolean(compression?.enabled);
+    const strategy = contextConfig?.strategy ?? 'none';
+    const keepLastN = Math.max(0, contextConfig?.keepLastN ?? 0);
 
-    // Everything since the last compaction point is sent as-is — never skip
-    // straight to "last N", or messages that fell out of that window but
-    // haven't been folded into the summary yet would just vanish from context.
-    const contextHistory = useCompression ? this.history.slice(this.summarizedThroughIndex) : this.history;
-    const summaryForPrompt = useCompression ? this.summary || undefined : undefined;
+    let factsUpdate: ContextInfo['factsUpdate'];
+    let factsRequests: LlmRequestLog[] = [];
+    if (strategy === 'sticky-facts') {
+      // Update from the incoming message first, so this very turn's answer can
+      // already use whatever just changed (a new goal, constraint, etc.).
+      const updated = await updateFacts(this.facts, prompt, options?.model);
+      this.facts = updated.facts;
+      factsRequests = updated.requests;
+      factsUpdate = { usage: updated.usage, costByn: updated.costByn };
+    }
+
+    let contextHistory: ChatMessage[];
+    let summaryForPrompt: string | undefined;
+    let factsForPrompt: string | undefined;
+
+    switch (strategy) {
+      case 'sliding-window':
+        contextHistory = keepLastN > 0 ? this.history.slice(-keepLastN) : [];
+        break;
+      case 'summary':
+        // Everything since the last compaction point — never jump straight to
+        // "last N", or messages that fell out of that window but haven't been
+        // folded into the summary yet would just vanish from context.
+        contextHistory = this.history.slice(this.summarizedThroughIndex);
+        summaryForPrompt = this.summary || undefined;
+        break;
+      case 'sticky-facts':
+        contextHistory = keepLastN > 0 ? this.history.slice(-keepLastN) : [];
+        factsForPrompt = formatFacts(this.facts);
+        break;
+      case 'branching':
+      case 'none':
+      default:
+        contextHistory = this.history;
+        break;
+    }
 
     const requestTokens = countTokens(prompt);
     const historyTokens =
-      countHistoryTokens(contextHistory) + (summaryForPrompt ? countTokens(summaryForPrompt) : 0);
+      countHistoryTokens(contextHistory) +
+      (summaryForPrompt ? countTokens(summaryForPrompt) : 0) +
+      (factsForPrompt ? countTokens(factsForPrompt) : 0);
 
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, {
       ...options,
       history: contextHistory,
       summary: summaryForPrompt,
+      facts: factsForPrompt,
     });
     const responseTimeMs = Date.now() - start;
     const costByn = estimateCostByn(result.model, result.usage);
@@ -139,10 +276,30 @@ export class Agent {
 
     this.history.push({ role: 'user', content: prompt }, { role: 'assistant', content: result.content });
 
-    let summaryUpdate: CompressionInfo['summaryUpdate'];
+    let summaryUpdate: ContextInfo['summaryUpdate'];
     let compactionRequests: LlmRequestLog[] = [];
-    if (useCompression) {
+    if (strategy === 'summary') {
       ({ summaryUpdate, requests: compactionRequests } = await this.maybeCompact(keepLastN, options?.model));
+    }
+
+    const context: ContextInfo = {
+      strategy,
+      keepLastN,
+      recentMessageCount: contextHistory.length,
+    };
+    if (strategy === 'summary') {
+      context.summarizedMessageCount = this.summarizedThroughIndex;
+      context.recentMessageCount = this.history.length - this.summarizedThroughIndex;
+      context.summary = this.summary;
+      context.summaryUpdate = summaryUpdate;
+    }
+    if (strategy === 'sticky-facts') {
+      context.facts = this.facts;
+      context.factsUpdate = factsUpdate;
+    }
+    if (strategy === 'branching') {
+      context.activeBranchId = this.activeBranchId;
+      context.branches = this.listBranches();
     }
 
     return {
@@ -152,17 +309,8 @@ export class Agent {
       usage: result.usage,
       costByn,
       tokens: { requestTokens, historyTokens, responseTokens },
-      compression: compression
-        ? {
-            enabled: useCompression,
-            keepLastN,
-            summarizedMessageCount: this.summarizedThroughIndex,
-            recentMessageCount: this.history.length - this.summarizedThroughIndex,
-            summary: this.summary,
-            summaryUpdate,
-          }
-        : undefined,
-      requests: [...result.requests, ...compactionRequests],
+      context,
+      requests: [...factsRequests, ...result.requests, ...compactionRequests],
     };
   }
 
@@ -174,8 +322,8 @@ export class Agent {
   private async maybeCompact(
     keepLastN: number,
     model?: string,
-  ): Promise<{ summaryUpdate: CompressionInfo['summaryUpdate']; requests: LlmRequestLog[] }> {
-    let summaryUpdate: CompressionInfo['summaryUpdate'];
+  ): Promise<{ summaryUpdate: ContextInfo['summaryUpdate']; requests: LlmRequestLog[] }> {
+    let summaryUpdate: ContextInfo['summaryUpdate'];
     const requests: LlmRequestLog[] = [];
 
     while (true) {

@@ -18,6 +18,8 @@ export interface AskOptions {
   history?: ChatMessage[];
   /** Summary of older turns not included in `history` (see history compression). */
   summary?: string;
+  /** Sticky-facts key-value memory, formatted as "key: value" lines. */
+  facts?: string;
 }
 
 export interface LlmUsage {
@@ -98,6 +100,14 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
           {
             role: 'system',
             content: `Summary of the earlier part of this conversation (older messages were dropped to save context — treat this as ground truth for what was said before): ${options.summary}`,
+          },
+        ]
+      : []),
+    ...(options.facts
+      ? [
+          {
+            role: 'system',
+            content: `Known facts about this conversation (key-value memory, updated as things change — treat this as ground truth): ${options.facts}`,
           },
         ]
       : []),

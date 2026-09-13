@@ -14,13 +14,21 @@ type TokenCounts = {
   responseTokens: number;
 };
 
-type CompressionInfo = {
-  enabled: boolean;
+type ContextStrategy = 'none' | 'sliding-window' | 'summary' | 'sticky-facts' | 'branching';
+
+type BranchSummary = { id: string; messageCount: number };
+
+type ContextInfo = {
+  strategy: ContextStrategy;
   keepLastN: number;
-  summarizedMessageCount: number;
   recentMessageCount: number;
-  summary: string;
+  summarizedMessageCount?: number;
+  summary?: string;
   summaryUpdate?: { usage?: Usage; costByn?: number };
+  facts?: Record<string, string>;
+  factsUpdate?: { usage?: Usage; costByn?: number };
+  activeBranchId?: string;
+  branches?: BranchSummary[];
 };
 
 type LlmRequestLog = {
@@ -38,7 +46,7 @@ type Message = {
     usage?: Usage;
     costByn?: number;
     tokens: TokenCounts;
-    compression?: CompressionInfo;
+    context?: ContextInfo;
     requests: LlmRequestLog[];
   };
 };
@@ -53,7 +61,7 @@ type ChatSettings = {
   reasoningMode: ReasoningMode;
   temperature: string;
   model: string;
-  compressionEnabled: boolean;
+  contextStrategy: ContextStrategy;
   keepLastN: string;
 };
 
@@ -63,7 +71,21 @@ type Chat = {
   createdAt: number;
   messages: Message[];
   settings: ChatSettings;
+  // Branching only: known branches for this chat, which one is active, and a
+  // per-branch cache of messages so switching back doesn't lose what's rich
+  // (tokens/cost/etc.) for messages sent locally in this session.
+  branches?: BranchSummary[];
+  activeBranchId?: string;
+  branchMessages?: Record<string, Message[]>;
 };
+
+const CONTEXT_STRATEGIES: { value: ContextStrategy; label: string }[] = [
+  { value: 'none', label: 'Нет (полная история)' },
+  { value: 'sliding-window', label: 'Sliding Window' },
+  { value: 'summary', label: 'Summary (сжатие)' },
+  { value: 'sticky-facts', label: 'Sticky Facts' },
+  { value: 'branching', label: 'Branching (ветки)' },
+];
 
 const MODELS = [
   { value: 'deepseek-v4-flash', label: 'Слабая (deepseek-v4-flash)' },
@@ -85,7 +107,7 @@ function defaultSettings(): ChatSettings {
     reasoningMode: 'direct',
     temperature: '1',
     model: MODELS[0].value,
-    compressionEnabled: false,
+    contextStrategy: 'none',
     keepLastN: '20',
   };
 }
@@ -124,6 +146,7 @@ export default function ChatPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [input, setInput] = useState('');
+  const [newBranchName, setNewBranchName] = useState('');
 
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
@@ -162,8 +185,7 @@ export default function ChatPage() {
     { apiTokens: 0, costByn: 0 },
   );
 
-  const latestCompression = [...(activeChat?.messages ?? [])].reverse().find((m) => m.meta?.compression)?.meta
-    ?.compression;
+  const latestContext = [...(activeChat?.messages ?? [])].reverse().find((m) => m.meta?.context)?.meta?.context;
   const latestRequests = [...(activeChat?.messages ?? [])].reverse().find((m) => m.meta?.requests)?.meta?.requests;
 
   function newChat() {
@@ -213,6 +235,10 @@ export default function ChatPage() {
     );
   }
 
+  function updateChat(chatId: string, patch: Partial<Chat>) {
+    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, ...patch } : c)));
+  }
+
   function setChatLoading(chatId: string, isLoading: boolean) {
     setLoadingChatIds((prev) => {
       const next = new Set(prev);
@@ -231,13 +257,87 @@ export default function ChatPage() {
     });
   }
 
+  async function refreshBranches(chatId: string) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/branches`);
+      if (!response.ok) return;
+      const data: { branches: BranchSummary[]; activeBranchId: string } = await response.json();
+      updateChat(chatId, { branches: data.branches, activeBranchId: data.activeBranchId });
+    } catch {
+      // Best-effort — branch list is a convenience, not required for chatting.
+    }
+  }
+
+  async function forkBranch(chatId: string) {
+    const name = newBranchName.trim();
+    if (!name) return;
+    const chat = chats.find((c) => c.id === chatId);
+    if (!chat) return;
+
+    try {
+      const createResponse = await fetch(`/api/backend/agents/${chatId}/branches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!createResponse.ok) {
+        setChatError(chatId, `Could not create branch: ${createResponse.status} ${await createResponse.text()}`);
+        return;
+      }
+      await fetch(`/api/backend/agents/${chatId}/branches/${name}/switch`, { method: 'POST' });
+
+      // The new branch is an exact copy of what's on screen right now — cache
+      // it immediately instead of round-tripping for messages we already have.
+      const cached = { ...(chat.branchMessages ?? {}), [name]: chat.messages };
+      updateChat(chatId, { branchMessages: cached, activeBranchId: name });
+      setNewBranchName('');
+      await refreshBranches(chatId);
+    } catch (err) {
+      setChatError(chatId, err instanceof Error ? err.message : 'Could not create branch');
+    }
+  }
+
+  async function switchToBranch(chatId: string, branchId: string) {
+    const chat = chats.find((c) => c.id === chatId);
+    if (!chat || branchId === chat.activeBranchId) return;
+
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/branches/${branchId}/switch`, { method: 'POST' });
+      if (!response.ok) {
+        setChatError(chatId, `Could not switch branch: ${response.status} ${await response.text()}`);
+        return;
+      }
+
+      const cached = chat.branchMessages?.[branchId];
+      if (cached) {
+        updateChat(chatId, { activeBranchId: branchId, messages: cached });
+        return;
+      }
+
+      // Not cached locally (e.g. after a page reload) — fetch the branch's raw
+      // messages. They won't carry per-message tokens/cost, only role+content.
+      const messagesResponse = await fetch(`/api/backend/agents/${chatId}/messages`);
+      const data: { messages: { role: 'user' | 'assistant'; content: string }[] } = await messagesResponse.json();
+      const basicMessages: Message[] = data.messages.map((m) => ({ role: m.role, content: m.content }));
+      updateChat(chatId, {
+        activeBranchId: branchId,
+        messages: basicMessages,
+        branchMessages: { ...(chat.branchMessages ?? {}), [branchId]: basicMessages },
+      });
+    } catch (err) {
+      setChatError(chatId, err instanceof Error ? err.message : 'Could not switch branch');
+    }
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const chatId = activeChatId;
     const prompt = input.trim();
     if (!prompt || !chatId || loadingChatIds.has(chatId)) return;
 
-    const settings = chats.find((c) => c.id === chatId)?.settings ?? defaultSettings();
+    const chat = chats.find((c) => c.id === chatId);
+    const settings = chat?.settings ?? defaultSettings();
+    const activeBranchId = chat?.activeBranchId;
 
     updateMessages(chatId, (messages) => [...messages, { role: 'user', content: prompt }]);
     setInput('');
@@ -259,8 +359,8 @@ export default function ChatPage() {
           reasoningMode: settings.reasoningMode,
           temperature: parseFloat(settings.temperature),
           model: settings.model,
-          compression: {
-            enabled: settings.compressionEnabled,
+          context: {
+            strategy: settings.contextStrategy,
             keepLastN: Number.isFinite(parsedKeepLastN) && parsedKeepLastN >= 0 ? parsedKeepLastN : 20,
           },
         }),
@@ -277,26 +377,44 @@ export default function ChatPage() {
         usage?: Usage;
         costByn?: number;
         tokens: TokenCounts;
-        compression?: CompressionInfo;
+        context?: ContextInfo;
         requests: LlmRequestLog[];
       } = await response.json();
 
-      updateMessages(chatId, (messages) => [
-        ...messages,
-        {
-          role: 'assistant',
-          content: data.answer,
-          meta: {
-            model: data.model,
-            responseTimeMs: data.responseTimeMs,
-            usage: data.usage,
-            costByn: data.costByn,
-            tokens: data.tokens,
-            compression: data.compression,
-            requests: data.requests,
+      updateMessages(chatId, (messages) => {
+        const next: Message[] = [
+          ...messages,
+          {
+            role: 'assistant',
+            content: data.answer,
+            meta: {
+              model: data.model,
+              responseTimeMs: data.responseTimeMs,
+              usage: data.usage,
+              costByn: data.costByn,
+              tokens: data.tokens,
+              context: data.context,
+              requests: data.requests,
+            },
           },
-        },
-      ]);
+        ];
+        // Keep the branching cache in sync so switching away and back doesn't
+        // lose the message we just sent.
+        if (activeBranchId) {
+          setChats((prev) =>
+            prev.map((c) =>
+              c.id === chatId
+                ? { ...c, branchMessages: { ...(c.branchMessages ?? {}), [activeBranchId]: next } }
+                : c,
+            ),
+          );
+        }
+        return next;
+      });
+
+      if (settings.contextStrategy === 'branching') {
+        refreshBranches(chatId);
+      }
     } catch (err) {
       setChatError(chatId, err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -309,6 +427,7 @@ export default function ChatPage() {
   }
 
   const settings = activeChat.settings;
+  const isBranching = settings.contextStrategy === 'branching';
 
   return (
     <main className="mx-auto flex h-screen max-w-[100rem] gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
@@ -444,27 +563,77 @@ export default function ChatPage() {
             />
           </label>
 
-          <label className="flex flex-col gap-1 justify-end">
-            <span className="flex items-center gap-1 text-xs text-pine">
-              <input
-                type="checkbox"
-                checked={settings.compressionEnabled}
-                onChange={(event) => updateSettings(activeChat.id, { compressionEnabled: event.target.checked })}
-                disabled={isActiveLoading}
-              />
-              Сжатие истории
-            </span>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-pine">Стратегия контекста</span>
+            <select
+              value={settings.contextStrategy}
+              onChange={(event) =>
+                updateSettings(activeChat.id, { contextStrategy: event.target.value as ContextStrategy })
+              }
+              className="rounded-md border border-black/10 px-2 py-1"
+              disabled={isActiveLoading}
+            >
+              {CONTEXT_STRATEGIES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-pine">Хранить как есть, N сообщ.</span>
             <input
               type="number"
               min={0}
               value={settings.keepLastN}
               onChange={(event) => updateSettings(activeChat.id, { keepLastN: event.target.value })}
-              placeholder="Хранить как есть, N сообщений"
-              className="w-40 rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading || !settings.compressionEnabled}
+              className="w-32 rounded-md border border-black/10 px-2 py-1"
+              disabled={
+                isActiveLoading ||
+                settings.contextStrategy === 'none' ||
+                settings.contextStrategy === 'branching'
+              }
             />
           </label>
         </div>
+
+        {isBranching && (
+          <div className="shrink-0 flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white p-3 text-sm">
+            <span className="text-xs text-pine">Ветки:</span>
+            {(activeChat.branches ?? [{ id: 'main', messageCount: activeChat.messages.length }]).map((branch) => (
+              <button
+                key={branch.id}
+                type="button"
+                onClick={() => switchToBranch(activeChat.id, branch.id)}
+                disabled={isActiveLoading}
+                className={`rounded-md border px-2 py-1 text-xs ${
+                  (activeChat.activeBranchId ?? 'main') === branch.id
+                    ? 'border-pine bg-paper font-medium'
+                    : 'border-black/10 hover:bg-paper'
+                }`}
+              >
+                {branch.id} ({branch.messageCount})
+              </button>
+            ))}
+            <input
+              type="text"
+              value={newBranchName}
+              onChange={(event) => setNewBranchName(event.target.value)}
+              placeholder="Имя новой ветки"
+              className="w-40 rounded-md border border-black/10 px-2 py-1 text-xs"
+              disabled={isActiveLoading}
+            />
+            <button
+              type="button"
+              onClick={() => forkBranch(activeChat.id)}
+              disabled={isActiveLoading || !newBranchName.trim()}
+              className="rounded-md bg-pine px-3 py-1 text-xs text-white disabled:opacity-50"
+            >
+              Ветвиться отсюда
+            </button>
+          </div>
+        )}
 
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-black/10 bg-white p-4 text-sm">
           {activeChat.messages.length === 0 && (
@@ -506,12 +675,31 @@ export default function ChatPage() {
           </p>
         )}
 
-        {settings.compressionEnabled && latestCompression && (
+        {settings.contextStrategy === 'sliding-window' && latestContext && (
           <p className="shrink-0 text-xs text-[#5c5c5c]">
-            Сжатие истории: как есть — {latestCompression.recentMessageCount} сообщ. · обобщено —{' '}
-            {latestCompression.summarizedMessageCount} сообщ.
-            {latestCompression.summary && ` · summary: ${latestCompression.summary.slice(0, 120)}${latestCompression.summary.length > 120 ? '…' : ''}`}
+            Sliding Window: в контекст отправлено последних {latestContext.recentMessageCount} сообщ. (окно N=
+            {latestContext.keepLastN})
           </p>
+        )}
+
+        {settings.contextStrategy === 'summary' && latestContext && (
+          <p className="shrink-0 text-xs text-[#5c5c5c]">
+            Summary: как есть — {latestContext.recentMessageCount} сообщ. · обобщено —{' '}
+            {latestContext.summarizedMessageCount} сообщ.
+            {latestContext.summary &&
+              ` · summary: ${latestContext.summary.slice(0, 120)}${latestContext.summary.length > 120 ? '…' : ''}`}
+          </p>
+        )}
+
+        {settings.contextStrategy === 'sticky-facts' && latestContext?.facts && (
+          <div className="shrink-0 rounded-lg border border-black/10 bg-white p-2 text-xs text-[#5c5c5c]">
+            <span className="font-medium text-pine">Facts: </span>
+            {Object.keys(latestContext.facts).length === 0
+              ? 'пока ничего не известно'
+              : Object.entries(latestContext.facts)
+                  .map(([key, value]) => `${key}: ${value}`)
+                  .join(' · ')}
+          </div>
         )}
 
         {activeError && <p className="shrink-0 text-sm text-red-600">{activeError}</p>}
