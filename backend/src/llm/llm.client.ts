@@ -1,3 +1,8 @@
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface AskOptions {
   /** Desired response format: freeform prose, or a single JSON object. */
   format?: 'text' | 'json';
@@ -9,6 +14,8 @@ export interface AskOptions {
   temperature?: number;
   /** Overrides LLM_MODEL for this call. */
   model?: string;
+  /** Prior turns of the conversation, oldest first, to give the model context. */
+  history?: ChatMessage[];
 }
 
 export interface LlmUsage {
@@ -71,6 +78,7 @@ export async function callLlm(prompt: string, options: AskOptions = {}): Promise
     model,
     messages: [
       { role: 'system', content: instructions.join(' ') },
+      ...(options.history ?? []),
       { role: 'user', content: prompt },
     ],
   };

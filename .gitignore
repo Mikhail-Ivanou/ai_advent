@@ -6,7 +6,7 @@
 ._*
 
 # Custom folder icons
-Icon
+Icon
 
 # Volume root files
 .DocumentRevisions-V100
@@ -27,6 +27,7 @@ node_modules/
 # Runtime data
 *.pid
 *.pid.lock
+backend/data/
 
 # Coverage
 coverage/

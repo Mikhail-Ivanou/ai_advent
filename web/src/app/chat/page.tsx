@@ -60,6 +60,11 @@ export default function ChatPage() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
+  // Loading state and errors are keyed by chat id, so a request in one chat
+  // never shows "Thinking…" or locks the input in another.
+  const [loadingChatIds, setLoadingChatIds] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
   const [input, setInput] = useState('');
   const [format, setFormat] = useState<Format>('text');
   const [maxOutputTokens, setMaxOutputTokens] = useState('');
@@ -67,8 +72,6 @@ export default function ChatPage() {
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('direct');
   const [temperature, setTemperature] = useState('1');
   const [model, setModel] = useState<string>(MODELS[0].value);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
@@ -92,50 +95,83 @@ export default function ChatPage() {
   }, [chats, hydrated]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
+  const isActiveLoading = activeChatId ? loadingChatIds.has(activeChatId) : false;
+  const activeError = activeChatId ? (errors[activeChatId] ?? null) : null;
 
   function newChat() {
     const chat = createChat();
     setChats((prev) => [chat, ...prev]);
     setActiveChatId(chat.id);
-    setError(null);
   }
 
   function deleteChat(id: string) {
     setChats((prev) => {
-      const next = prev.filter((c) => c.id !== id);
-      if (activeChatId === id) {
-        setActiveChatId(next[0]?.id ?? null);
+      const remaining = prev.filter((c) => c.id !== id);
+      if (remaining.length > 0) {
+        if (activeChatId === id) setActiveChatId(remaining[0].id);
+        return remaining;
       }
-      return next.length > 0 ? next : [createChat()];
+      const fresh = createChat();
+      setActiveChatId(fresh.id);
+      return [fresh];
     });
+    setLoadingChatIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setErrors((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    // Best-effort: drop the agent's persisted history server-side too.
+    fetch(`/api/backend/agents/${id}`, { method: 'DELETE' }).catch(() => {});
   }
 
   function switchChat(id: string) {
-    if (id === activeChatId) return;
     setActiveChatId(id);
-    setError(null);
   }
 
-  function updateActiveMessages(updater: (messages: Message[]) => Message[]) {
-    setChats((prev) =>
-      prev.map((c) => (c.id === activeChatId ? { ...c, messages: updater(c.messages) } : c)),
-    );
+  function updateMessages(chatId: string, updater: (messages: Message[]) => Message[]) {
+    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, messages: updater(c.messages) } : c)));
+  }
+
+  function setChatLoading(chatId: string, isLoading: boolean) {
+    setLoadingChatIds((prev) => {
+      const next = new Set(prev);
+      if (isLoading) next.add(chatId);
+      else next.delete(chatId);
+      return next;
+    });
+  }
+
+  function setChatError(chatId: string, message: string | null) {
+    setErrors((prev) => {
+      const next = { ...prev };
+      if (message) next[chatId] = message;
+      else delete next[chatId];
+      return next;
+    });
   }
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
+    const chatId = activeChatId;
     const prompt = input.trim();
-    if (!prompt || loading || !activeChatId) return;
+    if (!prompt || !chatId || loadingChatIds.has(chatId)) return;
 
-    updateActiveMessages((messages) => [...messages, { role: 'user', content: prompt }]);
+    updateMessages(chatId, (messages) => [...messages, { role: 'user', content: prompt }]);
     setInput('');
-    setLoading(true);
-    setError(null);
+    setChatLoading(chatId, true);
+    setChatError(chatId, null);
 
     const parsedMaxTokens = parseInt(maxOutputTokens, 10);
 
     try {
-      const response = await fetch('/api/backend/llm/ask', {
+      const response = await fetch(`/api/backend/agents/${chatId}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -161,7 +197,7 @@ export default function ChatPage() {
         costByn?: number;
       } = await response.json();
 
-      updateActiveMessages((messages) => [
+      updateMessages(chatId, (messages) => [
         ...messages,
         {
           role: 'assistant',
@@ -175,9 +211,9 @@ export default function ChatPage() {
         },
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong');
+      setChatError(chatId, err instanceof Error ? err.message : 'Something went wrong');
     } finally {
-      setLoading(false);
+      setChatLoading(chatId, false);
     }
   }
 
@@ -206,7 +242,10 @@ export default function ChatPage() {
                   : 'border-black/10 bg-white/50 hover:bg-white'
               }`}
             >
-              <span className="truncate">{chatTitle(chat)}</span>
+              <span className="truncate">
+                {chatTitle(chat)}
+                {loadingChatIds.has(chat.id) && <span className="ml-1 text-pine">…</span>}
+              </span>
               <button
                 type="button"
                 title="Удалить чат"
@@ -235,7 +274,7 @@ export default function ChatPage() {
               value={reasoningMode}
               onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}
               className="rounded-md border border-black/10 px-2 py-1"
-              disabled={loading}
+              disabled={isActiveLoading}
             >
               <option value="direct">Direct answer</option>
               <option value="step-by-step">Step by step</option>
@@ -250,7 +289,7 @@ export default function ChatPage() {
               value={model}
               onChange={(event) => setModel(event.target.value)}
               className="rounded-md border border-black/10 px-2 py-1"
-              disabled={loading}
+              disabled={isActiveLoading}
             >
               {MODELS.map((m) => (
                 <option key={m.value} value={m.value}>
@@ -266,7 +305,7 @@ export default function ChatPage() {
               value={temperature}
               onChange={(event) => setTemperature(event.target.value)}
               className="rounded-md border border-black/10 px-2 py-1"
-              disabled={loading}
+              disabled={isActiveLoading}
             >
               <option value="0">0</option>
               <option value="0.7">0.7</option>
@@ -282,7 +321,7 @@ export default function ChatPage() {
               value={format}
               onChange={(event) => setFormat(event.target.value as Format)}
               className="rounded-md border border-black/10 px-2 py-1"
-              disabled={loading}
+              disabled={isActiveLoading}
             >
               <option value="text">Plain text</option>
               <option value="json">JSON</option>
@@ -298,7 +337,7 @@ export default function ChatPage() {
               onChange={(event) => setMaxOutputTokens(event.target.value)}
               placeholder="No limit"
               className="w-32 rounded-md border border-black/10 px-2 py-1"
-              disabled={loading}
+              disabled={isActiveLoading}
             />
           </label>
 
@@ -310,7 +349,7 @@ export default function ChatPage() {
               onChange={(event) => setStopSequence(event.target.value)}
               placeholder='e.g. "###" or "stop after the summary"'
               className="rounded-md border border-black/10 px-2 py-1"
-              disabled={loading}
+              disabled={isActiveLoading}
             />
           </label>
         </div>
@@ -341,10 +380,10 @@ export default function ChatPage() {
               )}
             </div>
           ))}
-          {loading && <p className="text-[#5c5c5c]">Thinking…</p>}
+          {isActiveLoading && <p className="text-[#5c5c5c]">Thinking…</p>}
         </div>
 
-        {error && <p className="shrink-0 text-sm text-red-600">{error}</p>}
+        {activeError && <p className="shrink-0 text-sm text-red-600">{activeError}</p>}
 
         <form onSubmit={sendMessage} className="shrink-0 flex gap-2">
           <input
@@ -352,11 +391,11 @@ export default function ChatPage() {
             onChange={(event) => setInput(event.target.value)}
             placeholder="Type a message…"
             className="flex-1 rounded-lg border border-black/10 px-3 py-2 outline-none focus:border-pine"
-            disabled={loading}
+            disabled={isActiveLoading}
           />
           <button
             type="submit"
-            disabled={loading || !input.trim()}
+            disabled={isActiveLoading || !input.trim()}
             className="rounded-lg bg-pine px-4 py-2 text-white disabled:opacity-50"
           >
             Send

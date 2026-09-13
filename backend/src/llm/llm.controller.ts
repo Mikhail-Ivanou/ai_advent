@@ -1,16 +1,6 @@
 import { Body, Controller, Post } from '@nestjs/common';
-import { ReasoningMode } from './llm.client';
+import { AskDto } from './ask.dto';
 import { AskResult, LlmService } from './llm.service';
-
-class AskDto {
-  prompt: string;
-  format?: 'text' | 'json';
-  maxOutputTokens?: number;
-  stopSequence?: string;
-  reasoningMode?: ReasoningMode;
-  temperature?: number;
-  model?: string;
-}
 
 @Controller('llm')
 export class LlmController {
