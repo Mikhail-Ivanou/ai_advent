@@ -16,6 +16,8 @@ export interface AskOptions {
   model?: string;
   /** Prior turns of the conversation, oldest first, to give the model context. */
   history?: ChatMessage[];
+  /** Summary of older turns not included in `history` (see history compression). */
+  summary?: string;
 }
 
 export interface LlmUsage {
@@ -24,10 +26,22 @@ export interface LlmUsage {
   totalTokens: number;
 }
 
+export interface LlmRequestLog {
+  /** Which step produced this call, e.g. "direct", "self-prompt:generate", "expert-panel:Критик". */
+  label: string;
+  model: string;
+  messages: { role: string; content: string }[];
+  temperature?: number;
+  maxOutputTokens?: number;
+  format?: 'text' | 'json';
+}
+
 export interface LlmResult {
   content: string;
   model: string;
   usage?: LlmUsage;
+  /** The exact request(s) sent to the API — one entry per underlying call this made. */
+  requests: LlmRequestLog[];
 }
 
 /**
@@ -57,7 +71,7 @@ export function estimateCostByn(model: string, usage?: LlmUsage): number | undef
  * LLM_API_URL is the provider's base URL (e.g. https://api.openai.com/v1) —
  * "/chat/completions" is appended automatically.
  */
-export async function callLlm(prompt: string, options: AskOptions = {}): Promise<LlmResult> {
+export async function callLlm(prompt: string, options: AskOptions = {}, label = 'direct'): Promise<LlmResult> {
   const baseUrl = (process.env.LLM_API_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
   const apiUrl = `${baseUrl}/chat/completions`;
   const apiKey = process.env.LLM_API_KEY;
@@ -77,14 +91,33 @@ export async function callLlm(prompt: string, options: AskOptions = {}): Promise
     instructions.push(`Stop writing immediately after you output: "${options.stopSequence}"`);
   }
 
-  const requestBody: Record<string, unknown> = {
+  const messages = [
+    { role: 'system', content: instructions.join(' ') },
+    // Its own message (not folded into the instructions above) so the model
+    // doesn't skim past it — this is the only record of everything that
+    // happened before the messages below.
+    ...(options.summary
+      ? [
+          {
+            role: 'system',
+            content: `Summary of the earlier part of this conversation (older messages were dropped to save context — treat this as ground truth for what was said before): ${options.summary}`,
+          },
+        ]
+      : []),
+    ...(options.history ?? []),
+    { role: 'user', content: prompt },
+  ];
+
+  const requestLog: LlmRequestLog = {
+    label,
     model,
-    messages: [
-      { role: 'system', content: instructions.join(' ') },
-      ...(options.history ?? []),
-      { role: 'user', content: prompt },
-    ],
+    messages,
+    temperature: options.temperature,
+    maxOutputTokens: options.maxOutputTokens,
+    format: options.format,
   };
+
+  const requestBody: Record<string, unknown> = { model, messages };
 
   if (options.format === 'json') {
     requestBody.response_format = { type: 'json_object' };
@@ -136,7 +169,7 @@ export async function callLlm(prompt: string, options: AskOptions = {}): Promise
       }
     : undefined;
 
-  return { content, model: data.model ?? model, usage };
+  return { content, model: data.model ?? model, usage, requests: [requestLog] };
 }
 
 function sumUsage(a?: LlmUsage, b?: LlmUsage): LlmUsage | undefined {
@@ -162,7 +195,11 @@ export async function callLlmWithReasoning(
 ): Promise<LlmResult> {
   switch (mode) {
     case 'step-by-step':
-      return callLlm(`${task}\n\nРешай пошагово, подробно объясняя каждый шаг рассуждения.`, options);
+      return callLlm(
+        `${task}\n\nРешай пошагово, подробно объясняя каждый шаг рассуждения.`,
+        options,
+        'step-by-step',
+      );
 
     case 'self-prompt': {
       const generated = await callLlm(
@@ -172,12 +209,14 @@ export async function callLlmWithReasoning(
 
 Задача: ${task}`,
         { model: options.model },
+        'self-prompt:generate',
       );
-      const answer = await callLlm(`${generated.content}\n\nЗадача: ${task}`, options);
+      const answer = await callLlm(`${generated.content}\n\nЗадача: ${task}`, options, 'self-prompt:answer');
       return {
         content: `Сгенерированный промпт:\n${generated.content}\n\nОтвет:\n${answer.content}`,
         model: answer.model,
         usage: sumUsage(generated.usage, answer.usage),
+        requests: [...generated.requests, ...answer.requests],
       };
     }
 
@@ -199,18 +238,21 @@ export async function callLlmWithReasoning(
       ];
 
       const results = await Promise.all(
-        experts.map(({ persona }) => callLlm(`${persona}\n\nЗадача: ${task}`, options)),
+        experts.map(({ role, persona }) =>
+          callLlm(`${persona}\n\nЗадача: ${task}`, options, `expert-panel:${role}`),
+        ),
       );
 
       return {
         content: experts.map(({ role }, index) => `${role}:\n${results[index].content}`).join('\n\n'),
         model: results[0]?.model ?? options.model ?? 'unknown',
         usage: results.reduce<LlmUsage | undefined>((acc, r) => sumUsage(acc, r.usage), undefined),
+        requests: results.flatMap((r) => r.requests),
       };
     }
 
     case 'direct':
     default:
-      return callLlm(task, options);
+      return callLlm(task, options, 'direct');
   }
 }

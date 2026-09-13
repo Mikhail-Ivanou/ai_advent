@@ -11,13 +11,19 @@ export class AgentsController {
   @Post(':id/ask')
   async ask(@Param('id') id: string, @Body() body: AskDto): Promise<AgentAskResult> {
     try {
-      return await this.agentsService.ask(id, body.prompt, body.reasoningMode, {
-        format: body.format,
-        maxOutputTokens: body.maxOutputTokens,
-        stopSequence: body.stopSequence,
-        temperature: body.temperature,
-        model: body.model,
-      });
+      return await this.agentsService.ask(
+        id,
+        body.prompt,
+        body.reasoningMode,
+        {
+          format: body.format,
+          maxOutputTokens: body.maxOutputTokens,
+          stopSequence: body.stopSequence,
+          temperature: body.temperature,
+          model: body.model,
+        },
+        body.compression,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';
       throw new BadGatewayException(message);

@@ -14,6 +14,24 @@ type TokenCounts = {
   responseTokens: number;
 };
 
+type CompressionInfo = {
+  enabled: boolean;
+  keepLastN: number;
+  summarizedMessageCount: number;
+  recentMessageCount: number;
+  summary: string;
+  summaryUpdate?: { usage?: Usage; costByn?: number };
+};
+
+type LlmRequestLog = {
+  label: string;
+  model: string;
+  messages: { role: string; content: string }[];
+  temperature?: number;
+  maxOutputTokens?: number;
+  format?: Format;
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -23,6 +41,8 @@ type Message = {
     usage?: Usage;
     costByn?: number;
     tokens: TokenCounts;
+    compression?: CompressionInfo;
+    requests: LlmRequestLog[];
   };
 };
 
@@ -36,6 +56,8 @@ type ChatSettings = {
   reasoningMode: ReasoningMode;
   temperature: string;
   model: string;
+  compressionEnabled: boolean;
+  keepLastN: string;
 };
 
 type Chat = {
@@ -66,6 +88,8 @@ function defaultSettings(): ChatSettings {
     reasoningMode: 'direct',
     temperature: '1',
     model: MODELS[0].value,
+    compressionEnabled: false,
+    keepLastN: '20',
   };
 }
 
@@ -140,6 +164,10 @@ export default function ChatPage() {
     },
     { apiTokens: 0, costByn: 0 },
   );
+
+  const latestCompression = [...(activeChat?.messages ?? [])].reverse().find((m) => m.meta?.compression)?.meta
+    ?.compression;
+  const latestRequests = [...(activeChat?.messages ?? [])].reverse().find((m) => m.meta?.requests)?.meta?.requests;
 
   function newChat() {
     const chat = createChat();
@@ -220,6 +248,7 @@ export default function ChatPage() {
     setChatError(chatId, null);
 
     const parsedMaxTokens = parseInt(settings.maxOutputTokens, 10);
+    const parsedKeepLastN = parseInt(settings.keepLastN, 10);
 
     try {
       const response = await fetch(`/api/backend/agents/${chatId}/ask`, {
@@ -233,6 +262,10 @@ export default function ChatPage() {
           reasoningMode: settings.reasoningMode,
           temperature: parseFloat(settings.temperature),
           model: settings.model,
+          compression: {
+            enabled: settings.compressionEnabled,
+            keepLastN: Number.isFinite(parsedKeepLastN) && parsedKeepLastN >= 0 ? parsedKeepLastN : 20,
+          },
         }),
       });
 
@@ -247,6 +280,8 @@ export default function ChatPage() {
         usage?: Usage;
         costByn?: number;
         tokens: TokenCounts;
+        compression?: CompressionInfo;
+        requests: LlmRequestLog[];
       } = await response.json();
 
       updateMessages(chatId, (messages) => [
@@ -260,6 +295,8 @@ export default function ChatPage() {
             usage: data.usage,
             costByn: data.costByn,
             tokens: data.tokens,
+            compression: data.compression,
+            requests: data.requests,
           },
         },
       ]);
@@ -277,7 +314,7 @@ export default function ChatPage() {
   const settings = activeChat.settings;
 
   return (
-    <main className="mx-auto flex h-screen max-w-5xl gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
+    <main className="mx-auto flex h-screen max-w-[100rem] gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
       <aside className="flex w-56 shrink-0 flex-col gap-2">
         <button
           type="button"
@@ -409,6 +446,27 @@ export default function ChatPage() {
               disabled={isActiveLoading}
             />
           </label>
+
+          <label className="flex flex-col gap-1 justify-end">
+            <span className="flex items-center gap-1 text-xs text-pine">
+              <input
+                type="checkbox"
+                checked={settings.compressionEnabled}
+                onChange={(event) => updateSettings(activeChat.id, { compressionEnabled: event.target.checked })}
+                disabled={isActiveLoading}
+              />
+              Сжатие истории
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={settings.keepLastN}
+              onChange={(event) => updateSettings(activeChat.id, { keepLastN: event.target.value })}
+              placeholder="Хранить как есть, N сообщений"
+              className="w-40 rounded-md border border-black/10 px-2 py-1"
+              disabled={isActiveLoading || !settings.compressionEnabled}
+            />
+          </label>
         </div>
 
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-black/10 bg-white p-4 text-sm">
@@ -451,6 +509,14 @@ export default function ChatPage() {
           </p>
         )}
 
+        {settings.compressionEnabled && latestCompression && (
+          <p className="shrink-0 text-xs text-[#5c5c5c]">
+            Сжатие истории: как есть — {latestCompression.recentMessageCount} сообщ. · обобщено —{' '}
+            {latestCompression.summarizedMessageCount} сообщ.
+            {latestCompression.summary && ` · summary: ${latestCompression.summary.slice(0, 120)}${latestCompression.summary.length > 120 ? '…' : ''}`}
+          </p>
+        )}
+
         {activeError && <p className="shrink-0 text-sm text-red-600">{activeError}</p>}
 
         <form onSubmit={sendMessage} className="shrink-0 flex gap-2">
@@ -470,6 +536,33 @@ export default function ChatPage() {
           </button>
         </form>
       </div>
+
+      <aside className="flex w-96 shrink-0 flex-col gap-2 overflow-hidden">
+        <h2 className="shrink-0 text-sm font-medium text-pine">
+          Фактический запрос {latestRequests && latestRequests.length > 1 ? `(${latestRequests.length})` : ''}
+        </h2>
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-black/10 bg-white p-3 text-xs">
+          {!latestRequests && <p className="text-[#5c5c5c]">Здесь появится последний запрос к модели.</p>}
+          {latestRequests?.map((req, reqIndex) => (
+            <div key={reqIndex} className="rounded-md border border-black/10 p-2">
+              <p className="mb-1 font-mono font-semibold text-pine">
+                {req.label} · {req.model}
+                {req.temperature !== undefined && ` · t=${req.temperature}`}
+              </p>
+              {req.messages.map((m, msgIndex) => (
+                <div key={msgIndex} className="mb-2 last:mb-0">
+                  <span className="rounded bg-paper px-1 text-[10px] uppercase tracking-wide text-[#5c5c5c]">
+                    {m.role}
+                  </span>
+                  <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-ink">
+                    {m.content}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </aside>
     </main>
   );
 }
