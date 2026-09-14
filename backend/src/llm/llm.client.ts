@@ -29,11 +29,8 @@ export interface LlmUsage {
 export interface LlmRequestLog {
   /** Which step produced this call, e.g. "direct", "self-prompt:generate", "expert-panel:Критик". */
   label: string;
-  model: string;
-  messages: { role: string; content: string }[];
-  temperature?: number;
-  maxOutputTokens?: number;
-  format?: 'text' | 'json';
+  /** The exact JSON body sent to the API for this call — model, messages, and whichever of response_format/max_tokens/temperature applied. */
+  body: Record<string, unknown>;
 }
 
 export interface LlmResult {
@@ -108,15 +105,6 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     { role: 'user', content: prompt },
   ];
 
-  const requestLog: LlmRequestLog = {
-    label,
-    model,
-    messages,
-    temperature: options.temperature,
-    maxOutputTokens: options.maxOutputTokens,
-    format: options.format,
-  };
-
   const requestBody: Record<string, unknown> = { model, messages };
 
   if (options.format === 'json') {
@@ -128,6 +116,11 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
   if (options.temperature !== undefined) {
     requestBody.temperature = options.temperature;
   }
+
+  // Captured after every conditional field above, so this is byte-for-byte
+  // what JSON.stringify(requestBody) below actually sends — not a parallel
+  // reconstruction that could drift from the real body.
+  const requestLog: LlmRequestLog = { label, body: requestBody };
 
   let response: Response;
   try {

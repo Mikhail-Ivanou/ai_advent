@@ -25,11 +25,8 @@ type CompressionInfo = {
 
 type LlmRequestLog = {
   label: string;
-  model: string;
-  messages: { role: string; content: string }[];
-  temperature?: number;
-  maxOutputTokens?: number;
-  format?: Format;
+  /** The exact JSON body sent to the API for this call. */
+  body: Record<string, unknown>;
 };
 
 type Message = {
@@ -545,20 +542,10 @@ export default function ChatPage() {
           {!latestRequests && <p className="text-[#5c5c5c]">Здесь появится последний запрос к модели.</p>}
           {latestRequests?.map((req, reqIndex) => (
             <div key={reqIndex} className="rounded-md border border-black/10 p-2">
-              <p className="mb-1 font-mono font-semibold text-pine">
-                {req.label} · {req.model}
-                {req.temperature !== undefined && ` · t=${req.temperature}`}
-              </p>
-              {req.messages.map((m, msgIndex) => (
-                <div key={msgIndex} className="mb-2 last:mb-0">
-                  <span className="rounded bg-paper px-1 text-[10px] uppercase tracking-wide text-[#5c5c5c]">
-                    {m.role}
-                  </span>
-                  <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-ink">
-                    {m.content}
-                  </pre>
-                </div>
-              ))}
+              <p className="mb-1 font-mono font-semibold text-pine">{req.label}</p>
+              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-ink">
+                {JSON.stringify(req.body, null, 2)}
+              </pre>
             </div>
           ))}
         </div>
