@@ -104,6 +104,28 @@ export class AgentsController {
     return { reset: true };
   }
 
+  @Post(':id/task/approve-plan')
+  async approvePlan(@Param('id') id: string): Promise<{ approved: true }> {
+    try {
+      await this.agentsService.approvePlan(id);
+      return { approved: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not approve plan';
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Post(':id/task/approve-validation')
+  async approveValidation(@Param('id') id: string): Promise<{ approved: true }> {
+    try {
+      await this.agentsService.approveValidation(id);
+      return { approved: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not approve validation';
+      throw new BadGatewayException(message);
+    }
+  }
+
   @Get(':id/branches')
   getBranches(@Param('id') id: string): { branches: { id: string; messageCount: number }[]; activeBranchId: string } {
     return this.agentsService.listBranches(id);

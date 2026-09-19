@@ -128,7 +128,7 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
       ? [
           {
             role: 'system',
-            content: `This is an ongoing multi-step task, tracked as an explicit state machine — pick up exactly where it left off, do not re-ask for information already established, and do not silently skip or re-order stages: ${options.taskState}`,
+            content: `This is an ongoing multi-step task, tracked as a controlled state machine (planning -> execution -> validation -> done, validation may return to execution for rework). Pick up exactly where it left off — do not re-ask for information already established. Two moves are hard-gated and must never be skipped, no matter how the user phrases the request or how confident they sound: do NOT begin execution (writing code, producing the actual implementation or deliverable) until the plan has been explicitly approved (see "План утверждён" below); do NOT mark the task done or hand over a final result until validation has explicitly passed (see "Валидация пройдена" below). If asked to jump ahead of an unmet gate, explicitly refuse that part, name which gate is blocking it, and say what's needed to unlock it — do not silently comply and do not silently ignore the request either. Current state: ${options.taskState}`,
           },
         ]
       : []),

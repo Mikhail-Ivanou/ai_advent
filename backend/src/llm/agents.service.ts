@@ -46,6 +46,19 @@ function isV4(entry: StoredAgentV3 | StoredAgentV4): entry is StoredAgentV4 {
   return 'taskState' in entry;
 }
 
+// Day 15 added planApproved/validationPassed to TaskState — a store written
+// before that exists without them. Rather than another whole StoredAgent
+// version for two booleans, tolerate their absence here and default to the
+// safe value (nothing pre-approved).
+function normalizeTaskState(taskState: TaskState | null): TaskState | null {
+  if (!taskState) return null;
+  return {
+    ...taskState,
+    planApproved: taskState.planApproved ?? false,
+    validationPassed: taskState.validationPassed ?? false,
+  };
+}
+
 /**
  * Keeps one Agent per chat id alive in memory and mirrors its conversation
  * state to disk, so a chat's context survives a backend restart: on boot we
@@ -69,7 +82,7 @@ export class AgentsService implements OnModuleInit {
       for (const [id, entry] of Object.entries(stored)) {
         if (isV2(entry)) {
           const workingMemory = isV3(entry) ? entry.workingMemory : {};
-          const taskState = isV3(entry) && isV4(entry) ? entry.taskState : null;
+          const taskState = normalizeTaskState(isV3(entry) && isV4(entry) ? entry.taskState : null);
           this.agents.set(
             id,
             new Agent(
@@ -185,6 +198,16 @@ export class AgentsService implements OnModuleInit {
 
   async resetTask(id: string): Promise<void> {
     this.getOrCreate(id).resetTask();
+    await this.persist();
+  }
+
+  async approvePlan(id: string): Promise<void> {
+    this.getOrCreate(id).approvePlan();
+    await this.persist();
+  }
+
+  async approveValidation(id: string): Promise<void> {
+    this.getOrCreate(id).approveValidation();
     await this.persist();
   }
 

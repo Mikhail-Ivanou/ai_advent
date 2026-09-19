@@ -331,13 +331,37 @@ export class Agent {
     this.taskState = null;
   }
 
-  /** Manual stage override from the UI, validated against the same transition table the automatic step uses — never lets the machine jump illegally. */
+  /** Manual stage override from the UI, validated against the same transition table AND gates the automatic step uses (Day 15) — never lets the machine jump illegally or skip an unapproved checkpoint. */
   setTaskStage(stage: TaskStage): void {
     if (!this.taskState) throw new Error('No active task to move');
-    if (!isValidTaskTransition(this.taskState.stage, stage)) {
-      throw new Error(`Cannot move from "${this.taskState.stage}" to "${stage}"`);
+    if (!isValidTaskTransition(this.taskState.stage, stage, this.taskState)) {
+      const reason =
+        this.taskState.stage === 'planning' && stage === 'execution'
+          ? ' — план ещё не утверждён'
+          : this.taskState.stage === 'validation' && stage === 'done'
+            ? ' — валидация ещё не пройдена'
+            : '';
+      throw new Error(`Cannot move from "${this.taskState.stage}" to "${stage}"${reason}`);
     }
-    this.taskState = { ...this.taskState, stage, updatedAt: new Date().toISOString() };
+    // Leaving validation for a rework loop invalidates the old validation
+    // pass — same rule the automatic step applies (see task-state.ts).
+    const validationPassed =
+      this.taskState.stage === 'validation' && stage === 'execution' ? false : this.taskState.validationPassed;
+    this.taskState = { ...this.taskState, stage, validationPassed, updatedAt: new Date().toISOString() };
+  }
+
+  /** Explicit gate (Day 15): unlocks planning -> execution. Only meaningful while still planning — approving a plan that's already been left behind doesn't do anything useful. */
+  approvePlan(): void {
+    if (!this.taskState) throw new Error('No active task to approve a plan for');
+    if (this.taskState.stage !== 'planning') throw new Error('Plan approval only applies while still in the planning stage');
+    this.taskState = { ...this.taskState, planApproved: true, updatedAt: new Date().toISOString() };
+  }
+
+  /** Explicit gate (Day 15): unlocks validation -> done. Only meaningful while in validation. */
+  approveValidation(): void {
+    if (!this.taskState) throw new Error('No active task to approve validation for');
+    if (this.taskState.stage !== 'validation') throw new Error('Validation approval only applies while in the validation stage');
+    this.taskState = { ...this.taskState, validationPassed: true, updatedAt: new Date().toISOString() };
   }
 
   async ask(

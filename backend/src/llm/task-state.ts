@@ -15,8 +15,28 @@ const TASK_TRANSITIONS: Record<TaskStage, TaskStage[]> = {
   done: [],
 };
 
-export function isValidTaskTransition(from: TaskStage, to: TaskStage): boolean {
-  return from === to || TASK_TRANSITIONS[from].includes(to);
+/**
+ * Day 15: adjacency in TASK_TRANSITIONS is necessary but not sufficient —
+ * two specific moves are additionally gated behind an explicit approval, so
+ * the machine can't be talked into skipping the checkpoint that move exists
+ * for:
+ * - planning -> execution requires `planApproved` (no implementation before
+ *   an approved plan).
+ * - validation -> done requires `validationPassed` (no shipping the final
+ *   result without validation actually passing).
+ * Gates are omitted for a plain adjacency check (e.g. when only the shape of
+ * the automaton matters, not a specific instance's state).
+ */
+export function isValidTaskTransition(
+  from: TaskStage,
+  to: TaskStage,
+  gates?: Pick<TaskState, 'planApproved' | 'validationPassed'>,
+): boolean {
+  if (from === to) return true;
+  if (!TASK_TRANSITIONS[from].includes(to)) return false;
+  if (from === 'planning' && to === 'execution') return gates ? gates.planApproved : true;
+  if (from === 'validation' && to === 'done') return gates ? gates.validationPassed : true;
+  return true;
 }
 
 export interface TaskState {
@@ -29,6 +49,10 @@ export interface TaskState {
   expectedAction: string;
   /** Frozen on purpose: while true, the update step is skipped entirely so nothing drifts while parked. */
   paused: boolean;
+  /** Explicit gate (Day 15): must be true before planning -> execution is allowed. Set by an explicit approval action, never inferred loosely. */
+  planApproved: boolean;
+  /** Explicit gate (Day 15): must be true before validation -> done is allowed. Reset to false automatically on a validation -> execution rework loop, since the old pass no longer applies to the redone work. */
+  validationPassed: boolean;
   updatedAt: string;
 }
 
@@ -38,6 +62,8 @@ function formatTaskState(task: TaskState): string {
     `Цель задачи: ${task.goal}`,
     `Текущий шаг: ${task.step}`,
     `Ожидаемое действие: ${task.expectedAction}`,
+    `План утверждён: ${task.planApproved ? 'да' : 'нет'}`,
+    `Валидация пройдена: ${task.validationPassed ? 'да' : 'нет'}`,
   ];
   return lines.join('\n');
 }
@@ -67,9 +93,13 @@ export async function updateTaskState(
   assistantAnswer: string,
   model?: string,
 ): Promise<TaskUpdateResult> {
-  const prompt = `Ты отслеживаешь состояние многошаговой задачи пользователя как конечный автомат с этапами:
+  const prompt = `Ты отслеживаешь состояние многошаговой задачи пользователя как конечный автомат с контролируемыми переходами:
 planning (планирование) → execution (выполнение) → validation (проверка результата) → done (завершено).
 Из validation можно вернуться в execution, если проверка выявила проблему.
+
+Два перехода заблокированы, пока не выполнено условие:
+- planning → execution ЗАПРЕЩЁН, пока пользователь явно не утвердил план (просто "звучит неплохо" — недостаточно; нужно явное согласие продолжать).
+- validation → done ЗАПРЕЩЁН, пока пользователь явно не подтвердил, что проверка/валидация пройдена успешно.
 
 Текущее состояние:
 ${current ? formatTaskState(current) : '(задачи ещё нет — обычный разговор без выделенной многошаговой задачи)'}
@@ -81,11 +111,14 @@ ${current ? formatTaskState(current) : '(задачи ещё нет — обыч
 Реши:
 1. Если это НЕ похоже на многошаговую задачу (просто вопрос, болтовня, разовая просьба) — верни {"task": null}.
 2. Если многошаговая задача только начинается — создай новое состояние с stage: "planning".
-3. Если задача уже идёт — обнови step и expectedAction под текущий момент; переведи stage на следующий, ТОЛЬКО если для этого есть явное основание в диалоге (план согласован → execution; шаги выполнены и пользователь просит проверить/подтвердить → validation; пользователь подтвердил, что всё готово → done). Никогда не перепрыгивай через этап.
-4. Не трогай задачу (верни её как есть), если обмен репликами явно не связан с ней.
+3. Если пользователь в этом сообщении явно утвердил план (например "план утверждён", "погнали", "делай так") — верни planApproved: true.
+4. Если пользователь в этом сообщении явно подтвердил, что валидация/проверка прошла успешно — верни validationPassed: true.
+5. Обнови step и expectedAction под текущий момент; переведи stage на следующий, ТОЛЬКО если для этого есть явное основание в диалоге И (если применимо) соответствующее условие выполнено. Никогда не перепрыгивай через этап и никогда не переводи planning→execution или validation→done без явного утверждения/подтверждения в этом же или более раннем сообщении.
+6. Не трогай задачу (верни её как есть), если обмен репликами явно не связан с ней.
 
 Верни ТОЛЬКО валидный JSON без пояснений и markdown, в формате:
-{"task": null} или {"task": {"stage": "planning"|"execution"|"validation"|"done", "goal": "...", "step": "...", "expectedAction": "..."}}`;
+{"task": null} или {"task": {"stage": "planning"|"execution"|"validation"|"done", "goal": "...", "step": "...", "expectedAction": "...", "planApproved": true|false, "validationPassed": true|false}}
+planApproved/validationPassed — true, только если пользователь только что дал согласие в ЭТОМ сообщении; иначе false (уже действующее согласие из прошлых ходов сохраняется автоматически, тебе не нужно его повторять).`;
 
   const result = await callLlm(prompt, { model, format: 'json', temperature: 0.1, maxOutputTokens: 400 }, 'task-state:update');
   const costByn = estimateCostByn(result.model, result.usage);
@@ -110,13 +143,30 @@ ${current ? formatTaskState(current) : '(задачи ещё нет — обыч
       ) {
         const proposedStage = parsed.task.stage as TaskStage;
         const fromStage = current?.stage ?? 'planning';
-        const stage = !current || isValidTaskTransition(fromStage, proposedStage) ? proposedStage : fromStage;
+        // Approval is sticky once granted — a turn that doesn't re-mention it
+        // can never take it away, only a fresh rework loop resets validation
+        // (handled below).
+        const planApproved = (current?.planApproved ?? false) || parsed.task.planApproved === true;
+        const provisionalValidationPassed = (current?.validationPassed ?? false) || parsed.task.validationPassed === true;
+
+        const stage = !current || isValidTaskTransition(fromStage, proposedStage, { planApproved, validationPassed: provisionalValidationPassed })
+          ? proposedStage
+          : fromStage;
+
+        // A rework loop (validation -> execution) invalidates the old
+        // validation pass — the redone work hasn't been validated yet, even
+        // though the flag that unlocked "done" last time is technically still
+        // sitting there.
+        const validationPassed = fromStage === 'validation' && stage === 'execution' ? false : provisionalValidationPassed;
+
         const next: TaskState = {
           stage,
           goal: parsed.task.goal,
           step: parsed.task.step,
           expectedAction: parsed.task.expectedAction,
           paused: false,
+          planApproved,
+          validationPassed,
           updatedAt: new Date().toISOString(),
         };
         changed = !current || JSON.stringify({ ...current, updatedAt: '' }) !== JSON.stringify({ ...next, updatedAt: '' });

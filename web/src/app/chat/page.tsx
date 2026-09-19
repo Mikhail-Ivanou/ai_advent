@@ -112,8 +112,21 @@ const TASK_TRANSITIONS: Record<TaskStage, TaskStage[]> = {
   done: [],
 };
 
-function canTransitionTask(from: TaskStage, to: TaskStage): boolean {
-  return from === to || TASK_TRANSITIONS[from].includes(to);
+// Day 15: adjacency alone isn't enough — planning -> execution and
+// validation -> done are each additionally gated behind an explicit
+// approval, so the two example rules ("no implementation before an approved
+// plan", "no final without validation") are enforced here too, not just on
+// the backend.
+function canTransitionTask(
+  from: TaskStage,
+  to: TaskStage,
+  gates?: Pick<TaskState, 'planApproved' | 'validationPassed'>,
+): boolean {
+  if (from === to) return true;
+  if (!TASK_TRANSITIONS[from].includes(to)) return false;
+  if (from === 'planning' && to === 'execution') return gates ? gates.planApproved : true;
+  if (from === 'validation' && to === 'done') return gates ? gates.validationPassed : true;
+  return true;
 }
 
 type TaskState = {
@@ -122,6 +135,8 @@ type TaskState = {
   step: string;
   expectedAction: string;
   paused: boolean;
+  planApproved: boolean;
+  validationPassed: boolean;
   updatedAt: string;
 };
 
@@ -664,6 +679,24 @@ export default function ChatPage() {
       await fetch(`/api/backend/agents/${chatId}/task`, { method: 'DELETE' });
     } catch {
       // Best-effort — a stale refresh will bring the old state back if the reset failed.
+    }
+  }
+
+  async function approvePlan(chatId: string) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/task/approve-plan`, { method: 'POST' });
+      if (response.ok) await refreshTaskState(chatId);
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  async function approveValidation(chatId: string) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/task/approve-validation`, { method: 'POST' });
+      if (response.ok) await refreshTaskState(chatId);
+    } catch {
+      // Best-effort.
     }
   }
 
@@ -1326,7 +1359,14 @@ export default function ChatPage() {
                     key={stage}
                     type="button"
                     onClick={() => setTaskStage(activeChat.id, stage)}
-                    disabled={stage !== currentTask.stage && !canTransitionTask(currentTask.stage, stage)}
+                    disabled={stage !== currentTask.stage && !canTransitionTask(currentTask.stage, stage, currentTask)}
+                    title={
+                      currentTask.stage === 'planning' && stage === 'execution' && !currentTask.planApproved
+                        ? 'Нельзя перейти к выполнению — план ещё не утверждён'
+                        : currentTask.stage === 'validation' && stage === 'done' && !currentTask.validationPassed
+                          ? 'Нельзя завершить — валидация ещё не пройдена'
+                          : undefined
+                    }
                     className={`rounded-md border px-2 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-40 ${
                       stage === currentTask.stage ? 'border-pine bg-pine text-white' : 'border-black/10 hover:bg-paper'
                     }`}
@@ -1344,8 +1384,14 @@ export default function ChatPage() {
               <p>
                 <span className="font-medium text-pine">Ожидается:</span> {currentTask.expectedAction}
               </p>
+              <p className={currentTask.planApproved ? 'text-[#5c5c5c]' : 'font-medium text-amber-600'}>
+                План утверждён: {currentTask.planApproved ? 'да' : 'нет'}
+              </p>
+              <p className={currentTask.validationPassed ? 'text-[#5c5c5c]' : 'font-medium text-amber-600'}>
+                Валидация пройдена: {currentTask.validationPassed ? 'да' : 'нет'}
+              </p>
               {currentTask.paused && <p className="mt-1 font-medium text-amber-600">⏸ Приостановлено</p>}
-              <div className="mt-2 flex gap-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 {currentTask.paused ? (
                   <button
                     type="button"
@@ -1361,6 +1407,24 @@ export default function ChatPage() {
                     className="rounded-md border border-black/10 px-3 py-1 hover:bg-paper"
                   >
                     Пауза
+                  </button>
+                )}
+                {currentTask.stage === 'planning' && !currentTask.planApproved && (
+                  <button
+                    type="button"
+                    onClick={() => approvePlan(activeChat.id)}
+                    className="rounded-md border border-pine px-3 py-1 text-pine hover:bg-paper"
+                  >
+                    Утвердить план
+                  </button>
+                )}
+                {currentTask.stage === 'validation' && !currentTask.validationPassed && (
+                  <button
+                    type="button"
+                    onClick={() => approveValidation(activeChat.id)}
+                    className="rounded-md border border-pine px-3 py-1 text-pine hover:bg-paper"
+                  >
+                    Подтвердить валидацию
                   </button>
                 )}
                 <button
