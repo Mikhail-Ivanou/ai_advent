@@ -1,4 +1,4 @@
-import { ContextConfig, MemoryConfig, TaskConfig } from './agent';
+import { ContextConfig, InvariantConfig, MemoryConfig, TaskConfig } from './agent';
 import { ReasoningMode } from './llm.client';
 
 export class AskDto {
@@ -17,4 +17,6 @@ export class AskDto {
   profileId?: string;
   /** Whether to run the task-state transition step this turn (Day 13). */
   task?: TaskConfig;
+  /** Whether to apply/check invariants this turn (Day 14). */
+  invariants?: InvariantConfig;
 }

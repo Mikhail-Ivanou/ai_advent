@@ -1,11 +1,12 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Agent, AgentAskResult, ContextConfig, MemoryConfig, TaskConfig } from './agent';
+import { Agent, AgentAskResult, ContextConfig, InvariantConfig, MemoryConfig, TaskConfig } from './agent';
 import { AskOptions, ChatMessage, ReasoningMode } from './llm.client';
 import { TaskStage, TaskState } from './task-state';
 import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
+import { InvariantService } from '../invariant/invariant.service';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'agents.json');
 
@@ -58,6 +59,7 @@ export class AgentsService implements OnModuleInit {
   constructor(
     private readonly memoryService: MemoryService,
     private readonly profileService: ProfileService,
+    private readonly invariantService: InvariantService,
   ) {}
 
   async onModuleInit() {
@@ -115,10 +117,12 @@ export class AgentsService implements OnModuleInit {
     memoryConfig?: MemoryConfig,
     profileId?: string,
     taskConfig?: TaskConfig,
+    invariantConfig?: InvariantConfig,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
     const longTermMemoryText = this.memoryService.formatForPrompt();
     const profileText = this.profileService.formatForPrompt(profileId);
+    const activeInvariants = this.invariantService.listActive();
     const result = await agent.ask(
       prompt,
       reasoningMode,
@@ -127,6 +131,8 @@ export class AgentsService implements OnModuleInit {
       memoryConfig,
       longTermMemoryText,
       taskConfig,
+      activeInvariants,
+      invariantConfig,
     );
     // Agent only ever sees the already-formatted profile text, not its id/name
     // (that'd mean handing it a ProfileService dependency just to label its

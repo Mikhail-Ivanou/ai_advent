@@ -11,6 +11,8 @@ import {
 import { routeMemory } from './memory-router';
 import { LongTermMemoryProposal } from '../memory/memory.types';
 import { TaskStage, TaskState, formatTaskState, isValidTaskTransition, updateTaskState } from './task-state';
+import { InvariantViolation, checkInvariantCompliance } from './invariant-check';
+import { Invariant } from '../invariant/invariant.types';
 import { countHistoryTokens, countTokens } from './tokenizer';
 
 export interface TokenCounts {
@@ -96,6 +98,29 @@ export interface TaskInfo {
   update?: { usage?: LlmUsage; costByn?: number };
 }
 
+/**
+ * Invariants (Day 14): hard constraints on the solution space — architecture,
+ * accepted technical decisions, stack limits, business rules. Unlike memory
+ * and task state, Agent holds no state of its own for these: the list is
+ * global (owned by InvariantService) and never mutated by a conversation, so
+ * it's passed in fresh on every call rather than stored on the instance.
+ */
+export interface InvariantConfig {
+  /** Inject invariants into the prompt as hard constraints this turn. Default true. */
+  use?: boolean;
+  /** Run the compliance-check step after this turn. Default true. Skipped automatically when there are no invariants to check against. */
+  check?: boolean;
+}
+
+export interface InvariantCheckInfo {
+  used: boolean;
+  checked: boolean;
+  /** Present only when `checked` is true. */
+  compliant?: boolean;
+  violations?: InvariantViolation[];
+  update?: { usage?: LlmUsage; costByn?: number };
+}
+
 export interface AgentAskResult {
   answer: string;
   model: string;
@@ -106,9 +131,10 @@ export interface AgentAskResult {
   context?: ContextInfo;
   memory?: MemoryInfo;
   task?: TaskInfo;
+  invariants?: InvariantCheckInfo;
   /** Which personalization profile (if any) was applied to this turn — populated by AgentsService, since Agent itself only sees the already-formatted text (Day 12). */
   profile?: { id: string; name: string };
-  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing/task-state calls. */
+  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing/task-state/invariant-check calls. */
   requests: LlmRequestLog[];
 }
 
@@ -159,6 +185,10 @@ function formatWorkingMemory(working: Record<string, string>): string {
   const entries = Object.entries(working);
   if (entries.length === 0) return '(пока пусто)';
   return entries.map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+function formatInvariants(invariants: Pick<Invariant, 'title' | 'rule'>[]): string {
+  return invariants.map((i) => `- [${i.title}] ${i.rule}`).join('\n');
 }
 
 async function updateFacts(
@@ -319,6 +349,9 @@ export class Agent {
     /** Long-term memory formatted for the prompt — owned by MemoryService, passed in since Agent doesn't hold it. */
     longTermMemoryText?: string,
     taskConfig?: TaskConfig,
+    /** Active invariants, fetched fresh by the caller (AgentsService) — Agent never persists these itself. */
+    invariants: Pick<Invariant, 'id' | 'title' | 'rule'>[] = [],
+    invariantConfig?: InvariantConfig,
   ): Promise<AgentAskResult> {
     const strategy = contextConfig?.strategy ?? 'none';
     const keepLastN = Math.max(0, contextConfig?.keepLastN ?? 0);
@@ -332,6 +365,12 @@ export class Agent {
     // Paused means frozen, full stop — never re-evaluated automatically, only
     // by an explicit resume/pause/setStage call from the caller.
     const updateTask = (taskConfig?.update ?? true) && !this.taskState?.paused;
+
+    const useInvariants = invariantConfig?.use ?? true;
+    const invariantsForPrompt = useInvariants && invariants.length > 0 ? formatInvariants(invariants) : undefined;
+    // Nothing to check against — skip the call entirely rather than asking the
+    // model to confirm compliance with an empty rule set.
+    const checkInvariants = (invariantConfig?.check ?? true) && invariants.length > 0;
 
     let factsUpdate: ContextInfo['factsUpdate'];
     let factsRequests: LlmRequestLog[] = [];
@@ -378,7 +417,8 @@ export class Agent {
       (workingMemoryForPrompt ? countTokens(workingMemoryForPrompt) : 0) +
       (longTermMemoryForPrompt ? countTokens(longTermMemoryForPrompt) : 0) +
       (options?.profile ? countTokens(options.profile) : 0) +
-      (taskStateForPrompt ? countTokens(taskStateForPrompt) : 0);
+      (taskStateForPrompt ? countTokens(taskStateForPrompt) : 0) +
+      (invariantsForPrompt ? countTokens(invariantsForPrompt) : 0);
 
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, {
@@ -389,6 +429,7 @@ export class Agent {
       workingMemory: workingMemoryForPrompt,
       longTermMemory: longTermMemoryForPrompt,
       taskState: taskStateForPrompt,
+      invariants: invariantsForPrompt,
     });
     const responseTimeMs = Date.now() - start;
     const costByn = estimateCostByn(result.model, result.usage);
@@ -442,6 +483,26 @@ export class Agent {
       task = { task: this.taskState, updated: false };
     }
 
+    // Compliance check: a separate, independent read of the assistant's own
+    // answer against every invariant — this is what actually lets us observe
+    // "did a violation happen and why", rather than trusting the main answer's
+    // self-report (it might not even mention the invariant it broke).
+    let invariantInfo: InvariantCheckInfo | undefined;
+    let invariantRequests: LlmRequestLog[] = [];
+    if (checkInvariants) {
+      const checked = await checkInvariantCompliance(invariants, prompt, result.content, options?.model);
+      invariantRequests = checked.requests;
+      invariantInfo = {
+        used: useInvariants,
+        checked: true,
+        compliant: checked.compliant,
+        violations: checked.violations,
+        update: { usage: checked.usage, costByn: checked.costByn },
+      };
+    } else {
+      invariantInfo = { used: useInvariants, checked: false };
+    }
+
     const context: ContextInfo = {
       strategy,
       keepLastN,
@@ -472,7 +533,15 @@ export class Agent {
       context,
       memory,
       task,
-      requests: [...factsRequests, ...result.requests, ...compactionRequests, ...memoryRequests, ...taskRequests],
+      invariants: invariantInfo,
+      requests: [
+        ...factsRequests,
+        ...result.requests,
+        ...compactionRequests,
+        ...memoryRequests,
+        ...taskRequests,
+        ...invariantRequests,
+      ],
     };
   }
 

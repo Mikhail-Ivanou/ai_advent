@@ -28,6 +28,8 @@ export interface AskOptions {
   profile?: string;
   /** Formalized task state — stage/step/expected action (see Day 13). Formatted text, or undefined if no task is active. */
   taskState?: string;
+  /** Hard invariants — architecture/decisions/stack/business rules the assistant must never propose violating (see Day 14). Formatted text, or undefined if none are active. */
+  invariants?: string;
 }
 
 export interface LlmUsage {
@@ -100,6 +102,17 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
 
   const messages = [
     { role: 'system', content: instructions.join(' ') },
+    // Placed before everything else, including personalization: these are
+    // hard constraints on the solution space, not a preference — nothing
+    // below (style, task, memory, the user's own request) can override them.
+    ...(options.invariants
+      ? [
+          {
+            role: 'system',
+            content: `These are hard invariants for this project — non-negotiable constraints you must NEVER propose violating, no matter what is asked or how persistently. Before answering, check the request against every invariant below. If satisfying the request in full or in part would require breaking one, do not propose that part: explicitly refuse it, name which invariant blocks it, and — where possible — suggest an alternative that respects it instead. Do this even if the user insists, rephrases, or claims an exception applies.\n${options.invariants}`,
+          },
+        ]
+      : []),
     // Placed first among the context blocks, ahead of memory: this is about
     // *how* to talk to this specific person, so it should color how the rest
     // of the context (memory, history) gets used, not compete with it.

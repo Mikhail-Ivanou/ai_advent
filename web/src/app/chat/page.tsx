@@ -131,6 +131,48 @@ type TaskInfo = {
   update?: { usage?: Usage; costByn?: number };
 };
 
+// Invariants (Day 14): hard constraints on the solution space — architecture,
+// accepted decisions, stack limits, business rules — stored globally like
+// profiles, never edited by the model itself, only by a person.
+type InvariantCategory = 'architecture' | 'decision' | 'stack' | 'business-rule';
+
+type Invariant = {
+  id: string;
+  category: InvariantCategory;
+  title: string;
+  rule: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type InvariantInput = Pick<Invariant, 'category' | 'title' | 'rule' | 'active'>;
+
+function emptyInvariantInput(): InvariantInput {
+  return { category: 'architecture', title: '', rule: '', active: true };
+}
+
+const INVARIANT_CATEGORIES: { value: InvariantCategory; label: string }[] = [
+  { value: 'architecture', label: 'Архитектура' },
+  { value: 'decision', label: 'Принятые решения' },
+  { value: 'stack', label: 'Ограничения стека' },
+  { value: 'business-rule', label: 'Бизнес-правила' },
+];
+
+const INVARIANT_CATEGORY_LABELS: Record<InvariantCategory, string> = Object.fromEntries(
+  INVARIANT_CATEGORIES.map((c) => [c.value, c.label]),
+) as Record<InvariantCategory, string>;
+
+type InvariantViolation = { id: string; title: string; explanation: string };
+
+type InvariantCheckInfo = {
+  used: boolean;
+  checked: boolean;
+  compliant?: boolean;
+  violations?: InvariantViolation[];
+  update?: { usage?: Usage; costByn?: number };
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -144,6 +186,7 @@ type Message = {
     memory?: MemoryUpdateInfo;
     profile?: { id: string; name: string };
     task?: TaskInfo;
+    invariants?: InvariantCheckInfo;
     requests: LlmRequestLog[];
   };
 };
@@ -165,6 +208,8 @@ type ChatSettings = {
   updateMemory: boolean;
   profileId: string;
   updateTaskState: boolean;
+  useInvariants: boolean;
+  checkInvariants: boolean;
 };
 
 type Chat = {
@@ -216,6 +261,8 @@ function defaultSettings(): ChatSettings {
     updateMemory: true,
     profileId: '',
     updateTaskState: true,
+    useInvariants: true,
+    checkInvariants: true,
   };
 }
 
@@ -287,6 +334,13 @@ export default function ChatPage() {
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [profileDraft, setProfileDraft] = useState<ProfileInput>(emptyProfileInput());
 
+  // Invariants (Day 14) are global too — a fixed rule set the assistant must
+  // never propose violating, independent of any one chat.
+  const [invariants, setInvariants] = useState<Invariant[]>([]);
+  const [invariantModalOpen, setInvariantModalOpen] = useState(false);
+  const [editingInvariantId, setEditingInvariantId] = useState<string | null>(null);
+  const [invariantDraft, setInvariantDraft] = useState<InvariantInput>(emptyInvariantInput());
+
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
     let loaded: Chat[] = [];
@@ -343,6 +397,23 @@ export default function ChatPage() {
     refreshProfiles();
   }, [hydrated]);
 
+  async function refreshInvariants() {
+    try {
+      const response = await fetch('/api/backend/invariants');
+      if (!response.ok) return;
+      const data: { invariants: Invariant[] } = await response.json();
+      setInvariants(data.invariants);
+    } catch {
+      // Best-effort — the panel just stays at whatever it last had.
+    }
+  }
+
+  // Invariants are global too, loaded once.
+  useEffect(() => {
+    if (!hydrated) return;
+    refreshInvariants();
+  }, [hydrated]);
+
   // Working memory is per chat — fetch it the first time a chat is viewed
   // (e.g. after a page reload) rather than on every render.
   useEffect(() => {
@@ -366,15 +437,16 @@ export default function ChatPage() {
   }, [hydrated, activeChatId, taskByChat]);
 
   useEffect(() => {
-    if (!logModalOpen && !profileModalOpen) return;
+    if (!logModalOpen && !profileModalOpen && !invariantModalOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setLogModalOpen(false);
       setProfileModalOpen(false);
+      setInvariantModalOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [logModalOpen, profileModalOpen]);
+  }, [logModalOpen, profileModalOpen, invariantModalOpen]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const isActiveLoading = activeChatId ? loadingChatIds.has(activeChatId) : false;
@@ -681,6 +753,72 @@ export default function ChatPage() {
     }
   }
 
+  function startNewInvariant() {
+    setEditingInvariantId(null);
+    setInvariantDraft(emptyInvariantInput());
+  }
+
+  function startEditingInvariant(invariant: Invariant) {
+    setEditingInvariantId(invariant.id);
+    setInvariantDraft({
+      category: invariant.category,
+      title: invariant.title,
+      rule: invariant.rule,
+      active: invariant.active,
+    });
+  }
+
+  async function saveInvariantDraft(event: FormEvent) {
+    event.preventDefault();
+    const title = invariantDraft.title.trim();
+    const rule = invariantDraft.rule.trim();
+    if (!title || !rule) return;
+    const payload = { ...invariantDraft, title, rule };
+
+    try {
+      const response = editingInvariantId
+        ? await fetch(`/api/backend/invariants/${editingInvariantId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+        : await fetch('/api/backend/invariants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+      if (response.ok) {
+        startNewInvariant();
+        await refreshInvariants();
+      }
+    } catch {
+      // Best-effort — leave the form filled in so the user can retry.
+    }
+  }
+
+  async function toggleInvariantActive(invariant: Invariant) {
+    setInvariants((prev) => prev.map((i) => (i.id === invariant.id ? { ...i, active: !i.active } : i)));
+    try {
+      await fetch(`/api/backend/invariants/${invariant.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !invariant.active }),
+      });
+    } catch {
+      // Best-effort — a stale refresh will bring the true state back if this failed.
+    }
+  }
+
+  async function deleteInvariant(id: string) {
+    setInvariants((prev) => prev.filter((i) => i.id !== id));
+    if (editingInvariantId === id) startNewInvariant();
+    try {
+      await fetch(`/api/backend/invariants/${id}`, { method: 'DELETE' });
+    } catch {
+      // Best-effort — a stale refresh will bring it back if the delete failed.
+    }
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const chatId = activeChatId;
@@ -724,6 +862,10 @@ export default function ChatPage() {
           task: {
             update: settings.updateTaskState,
           },
+          invariants: {
+            use: settings.useInvariants,
+            check: settings.checkInvariants,
+          },
         }),
       });
 
@@ -742,6 +884,7 @@ export default function ChatPage() {
         memory?: MemoryUpdateInfo;
         profile?: { id: string; name: string };
         task?: TaskInfo;
+        invariants?: InvariantCheckInfo;
         requests: LlmRequestLog[];
       } = await response.json();
 
@@ -761,6 +904,7 @@ export default function ChatPage() {
               memory: data.memory,
               profile: data.profile,
               task: data.task,
+              invariants: data.invariants,
               requests: data.requests,
             },
           },
@@ -1051,6 +1195,18 @@ export default function ChatPage() {
                       Задача: {TASK_STAGE_LABELS[message.meta.task.task.stage]} — {message.meta.task.task.step}
                     </p>
                   )}
+                  {message.meta.invariants?.checked && (
+                    <p
+                      className={`text-xs ${
+                        message.meta.invariants.compliant ? 'text-[#5c5c5c]' : 'font-medium text-red-600'
+                      }`}
+                      title={message.meta.invariants.violations?.map((v) => `${v.title}: ${v.explanation}`).join('\n')}
+                    >
+                      {message.meta.invariants.compliant
+                        ? '✓ Соответствует инвариантам'
+                        : `⚠ Нарушение: ${message.meta.invariants.violations?.map((v) => v.title).join(', ')}`}
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -1217,6 +1373,43 @@ export default function ChatPage() {
               </div>
             </>
           )}
+        </section>
+
+        <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-pine">Инварианты</h2>
+            <button
+              type="button"
+              onClick={() => {
+                startNewInvariant();
+                setInvariantModalOpen(true);
+              }}
+              className="text-[11px] text-[#5c5c5c] hover:text-pine"
+            >
+              Управлять
+            </button>
+          </div>
+          <div className="mb-1 flex flex-wrap gap-3">
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={settings.useInvariants}
+                onChange={(event) => updateSettings(activeChat.id, { useInvariants: event.target.checked })}
+              />
+              учитывать
+            </label>
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={settings.checkInvariants}
+                onChange={(event) => updateSettings(activeChat.id, { checkInvariants: event.target.checked })}
+              />
+              проверять соответствие
+            </label>
+          </div>
+          <p className="text-[#5c5c5c]">
+            Активно: {invariants.filter((i) => i.active).length} из {invariants.length}
+          </p>
         </section>
 
         <section
@@ -1508,6 +1701,126 @@ export default function ChatPage() {
                   </button>
                   {editingProfileId && (
                     <button type="button" onClick={startNewProfile} className="rounded-md border border-black/10 px-3 py-1">
+                      Отмена
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {invariantModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+          onClick={() => setInvariantModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-xl flex-col gap-3 overflow-hidden rounded-lg bg-white p-4 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between">
+              <h2 className="text-sm font-medium text-pine">Инварианты</h2>
+              <button
+                type="button"
+                onClick={() => setInvariantModalOpen(false)}
+                className="rounded px-2 text-[#5c5c5c] hover:bg-black/5 hover:text-ink"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto text-xs">
+              <ul className="flex flex-col gap-1">
+                {invariants.map((inv) => (
+                  <li
+                    key={inv.id}
+                    className={`flex items-start justify-between gap-2 rounded-md border p-2 ${
+                      editingInvariantId === inv.id ? 'border-pine' : 'border-black/10'
+                    } ${inv.active ? '' : 'opacity-50'}`}
+                  >
+                    <div>
+                      <p className="font-medium text-pine">
+                        [{INVARIANT_CATEGORY_LABELS[inv.category]}] {inv.title}
+                        {!inv.active && ' (выключен)'}
+                      </p>
+                      <p className="text-[#5c5c5c]">{inv.rule}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <label className="flex items-center gap-1 whitespace-nowrap">
+                        <input type="checkbox" checked={inv.active} onChange={() => toggleInvariantActive(inv)} />
+                        активен
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditingInvariant(inv)}
+                          className="text-[#5c5c5c] hover:text-pine"
+                        >
+                          Изм.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteInvariant(inv.id)}
+                          className="text-[#5c5c5c] hover:text-red-600"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+                {invariants.length === 0 && <p className="text-[#5c5c5c]">Пока нет ни одного инварианта.</p>}
+              </ul>
+
+              <form onSubmit={saveInvariantDraft} className="flex flex-col gap-1 border-t border-black/10 pt-2">
+                <p className="font-medium text-pine">
+                  {editingInvariantId ? 'Редактировать инвариант' : 'Новый инвариант'}
+                </p>
+                <select
+                  value={invariantDraft.category}
+                  onChange={(event) =>
+                    setInvariantDraft({ ...invariantDraft, category: event.target.value as InvariantCategory })
+                  }
+                  className="rounded-md border border-black/10 px-2 py-1"
+                >
+                  {INVARIANT_CATEGORIES.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={invariantDraft.title}
+                  onChange={(event) => setInvariantDraft({ ...invariantDraft, title: event.target.value })}
+                  placeholder="Название (например: База данных)"
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <textarea
+                  value={invariantDraft.rule}
+                  onChange={(event) => setInvariantDraft({ ...invariantDraft, rule: event.target.value })}
+                  placeholder="Правило (например: используем только PostgreSQL)"
+                  rows={3}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={!invariantDraft.title.trim() || !invariantDraft.rule.trim()}
+                    className="rounded-md bg-pine px-3 py-1 text-white disabled:opacity-50"
+                  >
+                    {editingInvariantId ? 'Сохранить' : 'Создать'}
+                  </button>
+                  {editingInvariantId && (
+                    <button
+                      type="button"
+                      onClick={startNewInvariant}
+                      className="rounded-md border border-black/10 px-3 py-1"
+                    >
                       Отмена
                     </button>
                   )}

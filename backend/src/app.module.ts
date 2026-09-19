@@ -4,9 +4,10 @@ import { AppService } from './app.service';
 import { LlmModule } from './llm/llm.module';
 import { MemoryModule } from './memory/memory.module';
 import { ProfileModule } from './profile/profile.module';
+import { InvariantModule } from './invariant/invariant.module';
 
 @Module({
-  imports: [LlmModule, MemoryModule, ProfileModule],
+  imports: [LlmModule, MemoryModule, ProfileModule, InvariantModule],
   controllers: [AppController],
   providers: [AppService],
 })

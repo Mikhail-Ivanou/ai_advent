@@ -36,6 +36,7 @@ export class AgentsController {
         body.memory,
         body.profileId,
         body.task,
+        body.invariants,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';
