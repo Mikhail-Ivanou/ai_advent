@@ -90,6 +90,47 @@ function emptyProfileInput(): ProfileInput {
   return { name: '', style: '', format: '', constraints: '' };
 }
 
+// Task state machine (Day 13): planning → execution → validation → done,
+// with validation allowed to bounce back to execution. Mirrors
+// backend/src/llm/task-state.ts — kept in sync by hand since this is a small,
+// stable table, not something worth a shared-package build step for.
+type TaskStage = 'planning' | 'execution' | 'validation' | 'done';
+
+const TASK_STAGES: TaskStage[] = ['planning', 'execution', 'validation', 'done'];
+
+const TASK_STAGE_LABELS: Record<TaskStage, string> = {
+  planning: 'Планирование',
+  execution: 'Выполнение',
+  validation: 'Проверка',
+  done: 'Готово',
+};
+
+const TASK_TRANSITIONS: Record<TaskStage, TaskStage[]> = {
+  planning: ['execution'],
+  execution: ['validation'],
+  validation: ['execution', 'done'],
+  done: [],
+};
+
+function canTransitionTask(from: TaskStage, to: TaskStage): boolean {
+  return from === to || TASK_TRANSITIONS[from].includes(to);
+}
+
+type TaskState = {
+  stage: TaskStage;
+  goal: string;
+  step: string;
+  expectedAction: string;
+  paused: boolean;
+  updatedAt: string;
+};
+
+type TaskInfo = {
+  task: TaskState | null;
+  updated: boolean;
+  update?: { usage?: Usage; costByn?: number };
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -102,6 +143,7 @@ type Message = {
     context?: ContextInfo;
     memory?: MemoryUpdateInfo;
     profile?: { id: string; name: string };
+    task?: TaskInfo;
     requests: LlmRequestLog[];
   };
 };
@@ -122,6 +164,7 @@ type ChatSettings = {
   useLongTermMemory: boolean;
   updateMemory: boolean;
   profileId: string;
+  updateTaskState: boolean;
 };
 
 type Chat = {
@@ -172,6 +215,7 @@ function defaultSettings(): ChatSettings {
     useLongTermMemory: true,
     updateMemory: true,
     profileId: '',
+    updateTaskState: true,
   };
 }
 
@@ -224,6 +268,10 @@ export default function ChatPage() {
   // Working memory, per chat id — fetched on first view of a chat and kept in
   // sync from each ask() response and from explicit clears.
   const [workingMemoryByChat, setWorkingMemoryByChat] = useState<Record<string, Record<string, string>>>({});
+
+  // Task state (Day 13), per chat id — same fetch-once-then-sync pattern as
+  // working memory above.
+  const [taskByChat, setTaskByChat] = useState<Record<string, TaskState | null>>({});
 
   const [logModalOpen, setLogModalOpen] = useState(false);
 
@@ -301,6 +349,16 @@ export default function ChatPage() {
       })
       .catch(() => {});
   }, [hydrated, activeChatId, workingMemoryByChat]);
+
+  useEffect(() => {
+    if (!hydrated || !activeChatId || activeChatId in taskByChat) return;
+    fetch(`/api/backend/agents/${activeChatId}/task`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { task: TaskState | null } | null) => {
+        if (data) setTaskByChat((prev) => ({ ...prev, [activeChatId]: data.task }));
+      })
+      .catch(() => {});
+  }, [hydrated, activeChatId, taskByChat]);
 
   useEffect(() => {
     if (!logModalOpen && !profileModalOpen) return;
@@ -481,6 +539,57 @@ export default function ChatPage() {
     }
   }
 
+  async function refreshTaskState(chatId: string) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/task`);
+      if (!response.ok) return;
+      const data: { task: TaskState | null } = await response.json();
+      setTaskByChat((prev) => ({ ...prev, [chatId]: data.task }));
+    } catch {
+      // Best-effort — the panel just stays at whatever it last had.
+    }
+  }
+
+  async function pauseTask(chatId: string) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/task/pause`, { method: 'POST' });
+      if (response.ok) setTaskByChat((prev) => ({ ...prev, [chatId]: prev[chatId] ? { ...prev[chatId]!, paused: true } : null }));
+    } catch {
+      // Best-effort — a stale panel is the worst case, not a broken one.
+    }
+  }
+
+  async function resumeTask(chatId: string) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/task/resume`, { method: 'POST' });
+      if (response.ok) setTaskByChat((prev) => ({ ...prev, [chatId]: prev[chatId] ? { ...prev[chatId]!, paused: false } : null }));
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  async function setTaskStage(chatId: string, stage: TaskStage) {
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/task/stage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage }),
+      });
+      if (response.ok) await refreshTaskState(chatId);
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  async function resetTask(chatId: string) {
+    setTaskByChat((prev) => ({ ...prev, [chatId]: null }));
+    try {
+      await fetch(`/api/backend/agents/${chatId}/task`, { method: 'DELETE' });
+    } catch {
+      // Best-effort — a stale refresh will bring the old state back if the reset failed.
+    }
+  }
+
   async function addLongTermEntry(event: FormEvent) {
     event.preventDefault();
     const key = newMemory.key.trim();
@@ -607,6 +716,9 @@ export default function ChatPage() {
             update: settings.updateMemory,
           },
           profileId: settings.profileId || undefined,
+          task: {
+            update: settings.updateTaskState,
+          },
         }),
       });
 
@@ -624,6 +736,7 @@ export default function ChatPage() {
         context?: ContextInfo;
         memory?: MemoryUpdateInfo;
         profile?: { id: string; name: string };
+        task?: TaskInfo;
         requests: LlmRequestLog[];
       } = await response.json();
 
@@ -642,6 +755,7 @@ export default function ChatPage() {
               context: data.context,
               memory: data.memory,
               profile: data.profile,
+              task: data.task,
               requests: data.requests,
             },
           },
@@ -668,6 +782,10 @@ export default function ChatPage() {
         }
       }
 
+      if (data.task) {
+        setTaskByChat((prev) => ({ ...prev, [chatId]: data.task!.task }));
+      }
+
       if (settings.contextStrategy === 'branching') {
         refreshBranches(chatId);
       }
@@ -685,6 +803,7 @@ export default function ChatPage() {
   const settings = activeChat.settings;
   const isBranching = settings.contextStrategy === 'branching';
   const currentWorkingMemory = workingMemoryByChat[activeChat.id] ?? {};
+  const currentTask = taskByChat[activeChat.id] ?? null;
 
   return (
     <main className="mx-auto flex h-screen max-w-[100rem] gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
@@ -922,6 +1041,11 @@ export default function ChatPage() {
                   {message.meta.profile && (
                     <p className="text-xs text-[#5c5c5c]">Профиль: {message.meta.profile.name}</p>
                   )}
+                  {message.meta.task?.updated && message.meta.task.task && (
+                    <p className="text-xs text-[#5c5c5c]">
+                      Задача: {TASK_STAGE_LABELS[message.meta.task.task.stage]} — {message.meta.task.task.step}
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -1013,6 +1137,80 @@ export default function ChatPage() {
             <p className="mt-1 text-[#5c5c5c]">
               Применяется автоматически ко всем сообщениям в этом чате, пока не изменён или не снят.
             </p>
+          )}
+        </section>
+
+        <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-pine">Задача (конечный автомат)</h2>
+            <label className="flex items-center gap-1 text-[11px]">
+              <input
+                type="checkbox"
+                checked={settings.updateTaskState}
+                onChange={(event) => updateSettings(activeChat.id, { updateTaskState: event.target.checked })}
+              />
+              авто
+            </label>
+          </div>
+
+          {!currentTask ? (
+            <p className="text-[#5c5c5c]">
+              Активной задачи нет — появится сама, как только начнётся многошаговая работа.
+            </p>
+          ) : (
+            <>
+              <div className="mb-2 flex flex-wrap gap-1">
+                {TASK_STAGES.map((stage) => (
+                  <button
+                    key={stage}
+                    type="button"
+                    onClick={() => setTaskStage(activeChat.id, stage)}
+                    disabled={stage !== currentTask.stage && !canTransitionTask(currentTask.stage, stage)}
+                    className={`rounded-md border px-2 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-40 ${
+                      stage === currentTask.stage ? 'border-pine bg-pine text-white' : 'border-black/10 hover:bg-paper'
+                    }`}
+                  >
+                    {TASK_STAGE_LABELS[stage]}
+                  </button>
+                ))}
+              </div>
+              <p>
+                <span className="font-medium text-pine">Цель:</span> {currentTask.goal}
+              </p>
+              <p>
+                <span className="font-medium text-pine">Шаг:</span> {currentTask.step}
+              </p>
+              <p>
+                <span className="font-medium text-pine">Ожидается:</span> {currentTask.expectedAction}
+              </p>
+              {currentTask.paused && <p className="mt-1 font-medium text-amber-600">⏸ Приостановлено</p>}
+              <div className="mt-2 flex gap-2">
+                {currentTask.paused ? (
+                  <button
+                    type="button"
+                    onClick={() => resumeTask(activeChat.id)}
+                    className="rounded-md bg-pine px-3 py-1 text-white"
+                  >
+                    Продолжить
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => pauseTask(activeChat.id)}
+                    className="rounded-md border border-black/10 px-3 py-1 hover:bg-paper"
+                  >
+                    Пауза
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => resetTask(activeChat.id)}
+                  className="rounded-md border border-black/10 px-3 py-1 text-[#5c5c5c] hover:bg-paper hover:text-red-600"
+                >
+                  Сбросить
+                </button>
+              </div>
+            </>
           )}
         </section>
 

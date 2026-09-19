@@ -3,10 +3,15 @@ import { AgentAskResult } from './agent';
 import { AgentsService } from './agents.service';
 import { AskDto } from './ask.dto';
 import { ChatMessage } from './llm.client';
+import { TaskStage, TaskState } from './task-state';
 
 class CreateBranchDto {
   name: string;
   fromBranchId?: string;
+}
+
+class SetTaskStageDto {
+  stage: TaskStage;
 }
 
 @Controller('agents')
@@ -30,6 +35,7 @@ export class AgentsController {
         body.context,
         body.memory,
         body.profileId,
+        body.task,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';
@@ -51,6 +57,50 @@ export class AgentsController {
   async clearWorkingMemory(@Param('id') id: string): Promise<{ cleared: true }> {
     await this.agentsService.clearWorkingMemory(id);
     return { cleared: true };
+  }
+
+  @Get(':id/task')
+  getTaskState(@Param('id') id: string): { task: TaskState | null } {
+    return { task: this.agentsService.getTaskState(id) };
+  }
+
+  @Post(':id/task/pause')
+  async pauseTask(@Param('id') id: string): Promise<{ paused: true }> {
+    try {
+      await this.agentsService.pauseTask(id);
+      return { paused: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not pause task';
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Post(':id/task/resume')
+  async resumeTask(@Param('id') id: string): Promise<{ resumed: true }> {
+    try {
+      await this.agentsService.resumeTask(id);
+      return { resumed: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not resume task';
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Post(':id/task/stage')
+  async setTaskStage(@Param('id') id: string, @Body() body: SetTaskStageDto): Promise<{ set: true }> {
+    try {
+      await this.agentsService.setTaskStage(id, body.stage);
+      return { set: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not change task stage';
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Delete(':id/task')
+  async resetTask(@Param('id') id: string): Promise<{ reset: true }> {
+    await this.agentsService.resetTask(id);
+    return { reset: true };
   }
 
   @Get(':id/branches')

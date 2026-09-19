@@ -1,8 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Agent, AgentAskResult, ContextConfig, MemoryConfig } from './agent';
+import { Agent, AgentAskResult, ContextConfig, MemoryConfig, TaskConfig } from './agent';
 import { AskOptions, ChatMessage, ReasoningMode } from './llm.client';
+import { TaskStage, TaskState } from './task-state';
 import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 
@@ -26,14 +27,22 @@ interface StoredAgentV3 extends StoredAgentV2 {
   workingMemory: Record<string, string>;
 }
 
-type StoredAgent = ChatMessage[] | StoredAgentV1 | StoredAgentV2 | StoredAgentV3;
+interface StoredAgentV4 extends StoredAgentV3 {
+  taskState: TaskState | null;
+}
 
-function isV2(entry: StoredAgent): entry is StoredAgentV2 | StoredAgentV3 {
+type StoredAgent = ChatMessage[] | StoredAgentV1 | StoredAgentV2 | StoredAgentV3 | StoredAgentV4;
+
+function isV2(entry: StoredAgent): entry is StoredAgentV2 | StoredAgentV3 | StoredAgentV4 {
   return !Array.isArray(entry) && 'branches' in entry;
 }
 
-function isV3(entry: StoredAgentV2 | StoredAgentV3): entry is StoredAgentV3 {
+function isV3(entry: StoredAgentV2 | StoredAgentV3 | StoredAgentV4): entry is StoredAgentV3 | StoredAgentV4 {
   return 'workingMemory' in entry;
+}
+
+function isV4(entry: StoredAgentV3 | StoredAgentV4): entry is StoredAgentV4 {
+  return 'taskState' in entry;
 }
 
 /**
@@ -58,6 +67,7 @@ export class AgentsService implements OnModuleInit {
       for (const [id, entry] of Object.entries(stored)) {
         if (isV2(entry)) {
           const workingMemory = isV3(entry) ? entry.workingMemory : {};
+          const taskState = isV3(entry) && isV4(entry) ? entry.taskState : null;
           this.agents.set(
             id,
             new Agent(
@@ -68,6 +78,7 @@ export class AgentsService implements OnModuleInit {
               entry.summarizedThroughIndex,
               entry.facts,
               workingMemory,
+              taskState,
             ),
           );
           continue;
@@ -76,7 +87,7 @@ export class AgentsService implements OnModuleInit {
         const { history, summary, summarizedThroughIndex } = Array.isArray(entry)
           ? { history: entry, summary: '', summarizedThroughIndex: 0 }
           : entry;
-        this.agents.set(id, new Agent(id, { main: history }, 'main', summary, summarizedThroughIndex, {}, {}));
+        this.agents.set(id, new Agent(id, { main: history }, 'main', summary, summarizedThroughIndex, {}, {}, null));
       }
       this.logger.log(`Restored ${this.agents.size} agent(s) from ${STORE_PATH}`);
     } catch (error) {
@@ -103,6 +114,7 @@ export class AgentsService implements OnModuleInit {
     contextConfig?: ContextConfig,
     memoryConfig?: MemoryConfig,
     profileId?: string,
+    taskConfig?: TaskConfig,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
     const longTermMemoryText = this.memoryService.formatForPrompt();
@@ -114,6 +126,7 @@ export class AgentsService implements OnModuleInit {
       contextConfig,
       memoryConfig,
       longTermMemoryText,
+      taskConfig,
     );
     // Agent only ever sees the already-formatted profile text, not its id/name
     // (that'd mean handing it a ProfileService dependency just to label its
@@ -142,6 +155,30 @@ export class AgentsService implements OnModuleInit {
 
   async clearWorkingMemory(id: string): Promise<void> {
     this.getOrCreate(id).clearWorkingMemory();
+    await this.persist();
+  }
+
+  getTaskState(id: string): TaskState | null {
+    return this.agents.get(id)?.taskState ?? null;
+  }
+
+  async pauseTask(id: string): Promise<void> {
+    this.getOrCreate(id).pauseTask();
+    await this.persist();
+  }
+
+  async resumeTask(id: string): Promise<void> {
+    this.getOrCreate(id).resumeTask();
+    await this.persist();
+  }
+
+  async setTaskStage(id: string, stage: TaskStage): Promise<void> {
+    this.getOrCreate(id).setTaskStage(stage);
+    await this.persist();
+  }
+
+  async resetTask(id: string): Promise<void> {
+    this.getOrCreate(id).resetTask();
     await this.persist();
   }
 
@@ -183,7 +220,7 @@ export class AgentsService implements OnModuleInit {
   private persist(): Promise<void> {
     // Snapshot synchronously, right now — before any await lets another
     // request's mutation or write interleave.
-    const snapshot: Record<string, StoredAgentV3> = {};
+    const snapshot: Record<string, StoredAgentV4> = {};
     for (const [id, agent] of this.agents) {
       snapshot[id] = {
         branches: agent.branches,
@@ -192,6 +229,7 @@ export class AgentsService implements OnModuleInit {
         summarizedThroughIndex: agent.summarizedThroughIndex,
         facts: agent.facts,
         workingMemory: agent.workingMemory,
+        taskState: agent.taskState,
       };
     }
 

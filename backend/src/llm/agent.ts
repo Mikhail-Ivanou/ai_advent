@@ -10,6 +10,7 @@ import {
 } from './llm.client';
 import { routeMemory } from './memory-router';
 import { LongTermMemoryProposal } from '../memory/memory.types';
+import { TaskStage, TaskState, formatTaskState, isValidTaskTransition, updateTaskState } from './task-state';
 import { countHistoryTokens, countTokens } from './tokenizer';
 
 export interface TokenCounts {
@@ -76,6 +77,25 @@ export interface MemoryInfo {
   update?: { usage?: LlmUsage; costByn?: number };
 }
 
+/**
+ * Task state (Day 13): a formal state machine — planning → execution →
+ * validation → done (validation may bounce back to execution) — tracked
+ * alongside the memory layers, not folded into working memory: this is
+ * specifically *where the task is*, not arbitrary facts about it.
+ */
+export interface TaskConfig {
+  /** Run the state-transition step after this turn. Default true. Ignored (treated as false) while the task is paused. */
+  update?: boolean;
+}
+
+export interface TaskInfo {
+  task: TaskState | null;
+  /** True only on a turn that actually changed the task (new task, stage/step/expectedAction change) — not just re-confirmed the same state. */
+  updated: boolean;
+  /** Present only on a turn that actually ran the update step (i.e. not paused, not skipped). */
+  update?: { usage?: LlmUsage; costByn?: number };
+}
+
 export interface AgentAskResult {
   answer: string;
   model: string;
@@ -85,9 +105,10 @@ export interface AgentAskResult {
   tokens: TokenCounts;
   context?: ContextInfo;
   memory?: MemoryInfo;
+  task?: TaskInfo;
   /** Which personalization profile (if any) was applied to this turn — populated by AgentsService, since Agent itself only sees the already-formatted text (Day 12). */
   profile?: { id: string; name: string };
-  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing calls. */
+  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing/task-state calls. */
   requests: LlmRequestLog[];
 }
 
@@ -206,6 +227,8 @@ export class Agent {
   facts: Record<string, string>;
   /** Working memory (Day 11): task-scoped data for this chat only — never shared with other chats. */
   workingMemory: Record<string, string>;
+  /** Task state (Day 13): the formalized planning/execution/validation/done machine for this chat. Null until a multi-step task is detected. */
+  taskState: TaskState | null;
 
   constructor(
     readonly id: string,
@@ -215,6 +238,7 @@ export class Agent {
     summarizedThroughIndex: number = 0,
     facts: Record<string, string> = {},
     workingMemory: Record<string, string> = {},
+    taskState: TaskState | null = null,
   ) {
     this.branches = branches;
     this.activeBranchId = activeBranchId;
@@ -222,6 +246,7 @@ export class Agent {
     this.summarizedThroughIndex = summarizedThroughIndex;
     this.facts = facts;
     this.workingMemory = workingMemory;
+    this.taskState = taskState;
   }
 
   /** The active branch's messages — a live reference, so pushing onto it mutates `branches` directly. */
@@ -259,6 +284,32 @@ export class Agent {
     this.workingMemory = {};
   }
 
+  /** Freezes task state: the update step is skipped entirely on later turns until resumed, so nothing drifts while parked (Day 13, "pause at any stage"). */
+  pauseTask(): void {
+    if (!this.taskState) throw new Error('No active task to pause');
+    this.taskState = { ...this.taskState, paused: true };
+  }
+
+  /** Unfreezes task state — the very next turn resumes normal auto-advancement, without needing the task re-explained. */
+  resumeTask(): void {
+    if (!this.taskState) throw new Error('No active task to resume');
+    this.taskState = { ...this.taskState, paused: false };
+  }
+
+  /** Clears task state entirely — e.g. to abandon the current task and start a fresh one. */
+  resetTask(): void {
+    this.taskState = null;
+  }
+
+  /** Manual stage override from the UI, validated against the same transition table the automatic step uses — never lets the machine jump illegally. */
+  setTaskStage(stage: TaskStage): void {
+    if (!this.taskState) throw new Error('No active task to move');
+    if (!isValidTaskTransition(this.taskState.stage, stage)) {
+      throw new Error(`Cannot move from "${this.taskState.stage}" to "${stage}"`);
+    }
+    this.taskState = { ...this.taskState, stage, updatedAt: new Date().toISOString() };
+  }
+
   async ask(
     prompt: string,
     reasoningMode?: ReasoningMode,
@@ -267,6 +318,7 @@ export class Agent {
     memoryConfig?: MemoryConfig,
     /** Long-term memory formatted for the prompt — owned by MemoryService, passed in since Agent doesn't hold it. */
     longTermMemoryText?: string,
+    taskConfig?: TaskConfig,
   ): Promise<AgentAskResult> {
     const strategy = contextConfig?.strategy ?? 'none';
     const keepLastN = Math.max(0, contextConfig?.keepLastN ?? 0);
@@ -276,6 +328,10 @@ export class Agent {
     const updateMemory = memoryConfig?.update ?? true;
     const workingMemoryForPrompt = useWorkingMemory ? formatWorkingMemory(this.workingMemory) : undefined;
     const longTermMemoryForPrompt = useLongTermMemory ? longTermMemoryText : undefined;
+    const taskStateForPrompt = this.taskState ? formatTaskState(this.taskState) : undefined;
+    // Paused means frozen, full stop — never re-evaluated automatically, only
+    // by an explicit resume/pause/setStage call from the caller.
+    const updateTask = (taskConfig?.update ?? true) && !this.taskState?.paused;
 
     let factsUpdate: ContextInfo['factsUpdate'];
     let factsRequests: LlmRequestLog[] = [];
@@ -321,7 +377,8 @@ export class Agent {
       (factsForPrompt ? countTokens(factsForPrompt) : 0) +
       (workingMemoryForPrompt ? countTokens(workingMemoryForPrompt) : 0) +
       (longTermMemoryForPrompt ? countTokens(longTermMemoryForPrompt) : 0) +
-      (options?.profile ? countTokens(options.profile) : 0);
+      (options?.profile ? countTokens(options.profile) : 0) +
+      (taskStateForPrompt ? countTokens(taskStateForPrompt) : 0);
 
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, {
@@ -331,6 +388,7 @@ export class Agent {
       facts: factsForPrompt,
       workingMemory: workingMemoryForPrompt,
       longTermMemory: longTermMemoryForPrompt,
+      taskState: taskStateForPrompt,
     });
     const responseTimeMs = Date.now() - start;
     const costByn = estimateCostByn(result.model, result.usage);
@@ -370,6 +428,20 @@ export class Agent {
       };
     }
 
+    // Task-state transition step: same idea as memory routing, but a
+    // constrained state machine instead of free-form facts — skipped
+    // entirely while paused, so a parked task never silently drifts.
+    let task: TaskInfo | undefined;
+    let taskRequests: LlmRequestLog[] = [];
+    if (updateTask) {
+      const updated = await updateTaskState(this.taskState, prompt, result.content, options?.model);
+      this.taskState = updated.task;
+      taskRequests = updated.requests;
+      task = { task: this.taskState, updated: updated.changed, update: { usage: updated.usage, costByn: updated.costByn } };
+    } else {
+      task = { task: this.taskState, updated: false };
+    }
+
     const context: ContextInfo = {
       strategy,
       keepLastN,
@@ -399,7 +471,8 @@ export class Agent {
       tokens: { requestTokens, historyTokens, responseTokens },
       context,
       memory,
-      requests: [...factsRequests, ...result.requests, ...compactionRequests, ...memoryRequests],
+      task,
+      requests: [...factsRequests, ...result.requests, ...compactionRequests, ...memoryRequests, ...taskRequests],
     };
   }
 

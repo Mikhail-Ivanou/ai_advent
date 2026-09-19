@@ -26,6 +26,8 @@ export interface AskOptions {
   longTermMemory?: string;
   /** This user's personalization profile — style/format/constraints (see Day 12). Formatted text, or undefined if none selected. */
   profile?: string;
+  /** Formalized task state — stage/step/expected action (see Day 13). Formatted text, or undefined if no task is active. */
+  taskState?: string;
 }
 
 export interface LlmUsage {
@@ -106,6 +108,14 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
           {
             role: 'system',
             content: `This user has a personalization profile — apply it to every response, automatically, without being asked again: ${options.profile}`,
+          },
+        ]
+      : []),
+    ...(options.taskState
+      ? [
+          {
+            role: 'system',
+            content: `This is an ongoing multi-step task, tracked as an explicit state machine — pick up exactly where it left off, do not re-ask for information already established, and do not silently skip or re-order stages: ${options.taskState}`,
           },
         ]
       : []),

@@ -1,4 +1,4 @@
-import { ContextConfig, MemoryConfig } from './agent';
+import { ContextConfig, MemoryConfig, TaskConfig } from './agent';
 import { ReasoningMode } from './llm.client';
 
 export class AskDto {
@@ -15,4 +15,6 @@ export class AskDto {
   memory?: MemoryConfig;
   /** Which personalization profile to apply to this turn, if any (Day 12). */
   profileId?: string;
+  /** Whether to run the task-state transition step this turn (Day 13). */
+  task?: TaskConfig;
 }
