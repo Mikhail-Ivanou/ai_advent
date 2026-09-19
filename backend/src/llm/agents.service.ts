@@ -4,6 +4,7 @@ import * as path from 'path';
 import { Agent, AgentAskResult, ContextConfig, MemoryConfig } from './agent';
 import { AskOptions, ChatMessage, ReasoningMode } from './llm.client';
 import { MemoryService } from '../memory/memory.service';
+import { ProfileService } from '../profile/profile.service';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'agents.json');
 
@@ -45,7 +46,10 @@ export class AgentsService implements OnModuleInit {
   private readonly logger = new Logger(AgentsService.name);
   private readonly agents = new Map<string, Agent>();
 
-  constructor(private readonly memoryService: MemoryService) {}
+  constructor(
+    private readonly memoryService: MemoryService,
+    private readonly profileService: ProfileService,
+  ) {}
 
   async onModuleInit() {
     try {
@@ -98,10 +102,26 @@ export class AgentsService implements OnModuleInit {
     options?: AskOptions,
     contextConfig?: ContextConfig,
     memoryConfig?: MemoryConfig,
+    profileId?: string,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
     const longTermMemoryText = this.memoryService.formatForPrompt();
-    const result = await agent.ask(prompt, reasoningMode, options, contextConfig, memoryConfig, longTermMemoryText);
+    const profileText = this.profileService.formatForPrompt(profileId);
+    const result = await agent.ask(
+      prompt,
+      reasoningMode,
+      { ...options, profile: profileText },
+      contextConfig,
+      memoryConfig,
+      longTermMemoryText,
+    );
+    // Agent only ever sees the already-formatted profile text, not its id/name
+    // (that'd mean handing it a ProfileService dependency just to label its
+    // own output) — attach the label here, where both are in scope.
+    if (profileId) {
+      const profile = this.profileService.get(profileId);
+      if (profile) result.profile = { id: profile.id, name: profile.name };
+    }
     // Long-term memory is global, not part of the Agent — apply whatever the
     // routing step proposed to the shared store here, after the turn's own
     // state (history, working memory) has already been decided.

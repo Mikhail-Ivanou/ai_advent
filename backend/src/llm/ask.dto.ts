@@ -13,4 +13,6 @@ export class AskDto {
   context?: ContextConfig;
   /** Which memory layers to use/update for this turn (Day 11). */
   memory?: MemoryConfig;
+  /** Which personalization profile to apply to this turn, if any (Day 12). */
+  profileId?: string;
 }

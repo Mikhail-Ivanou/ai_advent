@@ -71,6 +71,25 @@ function memoryEntryKey(category: MemoryCategory, key: string): string {
   return `${category}:${key.trim().toLowerCase()}`;
 }
 
+// Personalization (Day 12): a profile is always explicit — created/edited by
+// hand, never auto-extracted — and gets attached to every request for
+// whichever chat has it selected, on top of the memory layers above.
+type Profile = {
+  id: string;
+  name: string;
+  style: string;
+  format: string;
+  constraints: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProfileInput = Pick<Profile, 'name' | 'style' | 'format' | 'constraints'>;
+
+function emptyProfileInput(): ProfileInput {
+  return { name: '', style: '', format: '', constraints: '' };
+}
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -82,6 +101,7 @@ type Message = {
     tokens: TokenCounts;
     context?: ContextInfo;
     memory?: MemoryUpdateInfo;
+    profile?: { id: string; name: string };
     requests: LlmRequestLog[];
   };
 };
@@ -101,6 +121,7 @@ type ChatSettings = {
   useWorkingMemory: boolean;
   useLongTermMemory: boolean;
   updateMemory: boolean;
+  profileId: string;
 };
 
 type Chat = {
@@ -150,6 +171,7 @@ function defaultSettings(): ChatSettings {
     useWorkingMemory: true,
     useLongTermMemory: true,
     updateMemory: true,
+    profileId: '',
   };
 }
 
@@ -205,6 +227,13 @@ export default function ChatPage() {
 
   const [logModalOpen, setLogModalOpen] = useState(false);
 
+  // Profiles (Day 12) are global, like long-term memory — created once,
+  // picked per chat via ChatSettings.profileId.
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [profileDraft, setProfileDraft] = useState<ProfileInput>(emptyProfileInput());
+
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
     let loaded: Chat[] = [];
@@ -244,6 +273,23 @@ export default function ChatPage() {
     refreshLongTermMemory();
   }, [hydrated]);
 
+  async function refreshProfiles() {
+    try {
+      const response = await fetch('/api/backend/profiles');
+      if (!response.ok) return;
+      const data: { profiles: Profile[] } = await response.json();
+      setProfiles(data.profiles);
+    } catch {
+      // Best-effort — the picker just stays at whatever it last had.
+    }
+  }
+
+  // Profiles are global too, loaded once.
+  useEffect(() => {
+    if (!hydrated) return;
+    refreshProfiles();
+  }, [hydrated]);
+
   // Working memory is per chat — fetch it the first time a chat is viewed
   // (e.g. after a page reload) rather than on every render.
   useEffect(() => {
@@ -257,13 +303,15 @@ export default function ChatPage() {
   }, [hydrated, activeChatId, workingMemoryByChat]);
 
   useEffect(() => {
-    if (!logModalOpen) return;
+    if (!logModalOpen && !profileModalOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setLogModalOpen(false);
+      if (event.key !== 'Escape') return;
+      setLogModalOpen(false);
+      setProfileModalOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [logModalOpen]);
+  }, [logModalOpen, profileModalOpen]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const isActiveLoading = activeChatId ? loadingChatIds.has(activeChatId) : false;
@@ -462,6 +510,63 @@ export default function ChatPage() {
     }
   }
 
+  function startNewProfile() {
+    setEditingProfileId(null);
+    setProfileDraft(emptyProfileInput());
+  }
+
+  function startEditingProfile(profile: Profile) {
+    setEditingProfileId(profile.id);
+    setProfileDraft({
+      name: profile.name,
+      style: profile.style,
+      format: profile.format,
+      constraints: profile.constraints,
+    });
+  }
+
+  async function saveProfileDraft(event: FormEvent) {
+    event.preventDefault();
+    const name = profileDraft.name.trim();
+    if (!name) return;
+    const payload = { ...profileDraft, name };
+
+    try {
+      const response = editingProfileId
+        ? await fetch(`/api/backend/profiles/${editingProfileId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+        : await fetch('/api/backend/profiles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+      if (response.ok) {
+        startNewProfile();
+        await refreshProfiles();
+      }
+    } catch {
+      // Best-effort — leave the form filled in so the user can retry.
+    }
+  }
+
+  async function deleteProfile(id: string) {
+    setProfiles((prev) => prev.filter((p) => p.id !== id));
+    if (editingProfileId === id) startNewProfile();
+    // Any chat that had this profile selected falls back to "no profile"
+    // rather than silently keeping a dangling id.
+    setChats((prev) =>
+      prev.map((c) => (c.settings.profileId === id ? { ...c, settings: { ...c.settings, profileId: '' } } : c)),
+    );
+    try {
+      await fetch(`/api/backend/profiles/${id}`, { method: 'DELETE' });
+    } catch {
+      // Best-effort — a stale refresh will bring it back if the delete failed.
+    }
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const chatId = activeChatId;
@@ -501,6 +606,7 @@ export default function ChatPage() {
             useLongTerm: settings.useLongTermMemory,
             update: settings.updateMemory,
           },
+          profileId: settings.profileId || undefined,
         }),
       });
 
@@ -517,6 +623,7 @@ export default function ChatPage() {
         tokens: TokenCounts;
         context?: ContextInfo;
         memory?: MemoryUpdateInfo;
+        profile?: { id: string; name: string };
         requests: LlmRequestLog[];
       } = await response.json();
 
@@ -534,6 +641,7 @@ export default function ChatPage() {
               tokens: data.tokens,
               context: data.context,
               memory: data.memory,
+              profile: data.profile,
               requests: data.requests,
             },
           },
@@ -811,6 +919,9 @@ export default function ChatPage() {
                   <p className="text-xs text-[#5c5c5c]">
                     запрос: {message.meta.tokens.requestTokens} · ответ: {message.meta.tokens.responseTokens} токенов
                   </p>
+                  {message.meta.profile && (
+                    <p className="text-xs text-[#5c5c5c]">Профиль: {message.meta.profile.name}</p>
+                  )}
                 </>
               )}
             </div>
@@ -872,6 +983,39 @@ export default function ChatPage() {
       </div>
 
       <aside className="flex w-96 shrink-0 flex-col gap-3 overflow-hidden">
+        <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-pine">Профиль пользователя</h2>
+            <button
+              type="button"
+              onClick={() => {
+                startNewProfile();
+                setProfileModalOpen(true);
+              }}
+              className="text-[11px] text-[#5c5c5c] hover:text-pine"
+            >
+              Управлять
+            </button>
+          </div>
+          <select
+            value={settings.profileId}
+            onChange={(event) => updateSettings(activeChat.id, { profileId: event.target.value })}
+            className="w-full rounded-md border border-black/10 px-2 py-1"
+          >
+            <option value="">— без профиля —</option>
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          {settings.profileId && (
+            <p className="mt-1 text-[#5c5c5c]">
+              Применяется автоматически ко всем сообщениям в этом чате, пока не изменён или не снят.
+            </p>
+          )}
+        </section>
+
         <div className="shrink-0 flex items-center justify-between">
           <h2 className="text-sm font-medium text-pine">Память агента</h2>
         </div>
@@ -1049,6 +1193,106 @@ export default function ChatPage() {
                   </pre>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {profileModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+          onClick={() => setProfileModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-xl flex-col gap-3 overflow-hidden rounded-lg bg-white p-4 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between">
+              <h2 className="text-sm font-medium text-pine">Профили пользователя</h2>
+              <button
+                type="button"
+                onClick={() => setProfileModalOpen(false)}
+                className="rounded px-2 text-[#5c5c5c] hover:bg-black/5 hover:text-ink"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto text-xs">
+              <ul className="flex flex-col gap-1">
+                {profiles.map((p) => (
+                  <li
+                    key={p.id}
+                    className={`flex items-start justify-between gap-2 rounded-md border p-2 ${
+                      editingProfileId === p.id ? 'border-pine' : 'border-black/10'
+                    }`}
+                  >
+                    <div>
+                      <p className="font-medium text-pine">{p.name}</p>
+                      {p.style && <p className="text-[#5c5c5c]">Стиль: {p.style}</p>}
+                      {p.format && <p className="text-[#5c5c5c]">Формат: {p.format}</p>}
+                      {p.constraints && <p className="text-[#5c5c5c]">Ограничения: {p.constraints}</p>}
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button type="button" onClick={() => startEditingProfile(p)} className="text-[#5c5c5c] hover:text-pine">
+                        Изм.
+                      </button>
+                      <button type="button" onClick={() => deleteProfile(p.id)} className="text-[#5c5c5c] hover:text-red-600">
+                        ×
+                      </button>
+                    </div>
+                  </li>
+                ))}
+                {profiles.length === 0 && <p className="text-[#5c5c5c]">Пока нет ни одного профиля.</p>}
+              </ul>
+
+              <form onSubmit={saveProfileDraft} className="flex flex-col gap-1 border-t border-black/10 pt-2">
+                <p className="font-medium text-pine">{editingProfileId ? 'Редактировать профиль' : 'Новый профиль'}</p>
+                <input
+                  type="text"
+                  value={profileDraft.name}
+                  onChange={(event) => setProfileDraft({ ...profileDraft, name: event.target.value })}
+                  placeholder="Название (например: Новичок)"
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <textarea
+                  value={profileDraft.style}
+                  onChange={(event) => setProfileDraft({ ...profileDraft, style: event.target.value })}
+                  placeholder="Стиль общения (например: неформально, на «ты»)"
+                  rows={2}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <textarea
+                  value={profileDraft.format}
+                  onChange={(event) => setProfileDraft({ ...profileDraft, format: event.target.value })}
+                  placeholder="Формат ответа (например: коротко, списками)"
+                  rows={2}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <textarea
+                  value={profileDraft.constraints}
+                  onChange={(event) => setProfileDraft({ ...profileDraft, constraints: event.target.value })}
+                  placeholder="Ограничения (например: не больше 5 предложений)"
+                  rows={2}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={!profileDraft.name.trim()}
+                    className="rounded-md bg-pine px-3 py-1 text-white disabled:opacity-50"
+                  >
+                    {editingProfileId ? 'Сохранить' : 'Создать'}
+                  </button>
+                  {editingProfileId && (
+                    <button type="button" onClick={startNewProfile} className="rounded-md border border-black/10 px-3 py-1">
+                      Отмена
+                    </button>
+                  )}
+                </div>
+              </form>
             </div>
           </div>
         </div>

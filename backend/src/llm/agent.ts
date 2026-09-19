@@ -85,6 +85,8 @@ export interface AgentAskResult {
   tokens: TokenCounts;
   context?: ContextInfo;
   memory?: MemoryInfo;
+  /** Which personalization profile (if any) was applied to this turn — populated by AgentsService, since Agent itself only sees the already-formatted text (Day 12). */
+  profile?: { id: string; name: string };
   /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing calls. */
   requests: LlmRequestLog[];
 }
@@ -318,7 +320,8 @@ export class Agent {
       (summaryForPrompt ? countTokens(summaryForPrompt) : 0) +
       (factsForPrompt ? countTokens(factsForPrompt) : 0) +
       (workingMemoryForPrompt ? countTokens(workingMemoryForPrompt) : 0) +
-      (longTermMemoryForPrompt ? countTokens(longTermMemoryForPrompt) : 0);
+      (longTermMemoryForPrompt ? countTokens(longTermMemoryForPrompt) : 0) +
+      (options?.profile ? countTokens(options.profile) : 0);
 
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, {

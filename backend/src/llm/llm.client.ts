@@ -24,6 +24,8 @@ export interface AskOptions {
   workingMemory?: string;
   /** Long-term memory: profile/decisions/knowledge that persists across chats (see memory model, Day 11). */
   longTermMemory?: string;
+  /** This user's personalization profile — style/format/constraints (see Day 12). Formatted text, or undefined if none selected. */
+  profile?: string;
 }
 
 export interface LlmUsage {
@@ -96,6 +98,17 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
 
   const messages = [
     { role: 'system', content: instructions.join(' ') },
+    // Placed first among the context blocks, ahead of memory: this is about
+    // *how* to talk to this specific person, so it should color how the rest
+    // of the context (memory, history) gets used, not compete with it.
+    ...(options.profile
+      ? [
+          {
+            role: 'system',
+            content: `This user has a personalization profile — apply it to every response, automatically, without being asked again: ${options.profile}`,
+          },
+        ]
+      : []),
     // Its own message (not folded into the instructions above) so the model
     // doesn't skim past it — this is the only record of everything that
     // happened before the messages below.
