@@ -37,6 +37,40 @@ type LlmRequestLog = {
   body: Record<string, unknown>;
 };
 
+// Memory model (Day 11): short-term is just the dialog above (Message[] /
+// ContextInfo); working and long-term are tracked separately, see below.
+type MemoryCategory = 'profile' | 'decision' | 'knowledge';
+
+type MemoryEntry = {
+  id: string;
+  category: MemoryCategory;
+  key: string;
+  value: string;
+  source: 'manual' | 'agent';
+  createdAt: string;
+  updatedAt: string;
+};
+
+type LongTermMemoryProposal = { category: MemoryCategory; key: string; value: string };
+
+type MemoryUpdateInfo = {
+  working: Record<string, string>;
+  usedWorking: boolean;
+  usedLongTerm: boolean;
+  longTermAdded: LongTermMemoryProposal[];
+  update?: { usage?: Usage; costByn?: number };
+};
+
+const MEMORY_CATEGORIES: { value: MemoryCategory; label: string }[] = [
+  { value: 'profile', label: 'Профиль' },
+  { value: 'decision', label: 'Решения' },
+  { value: 'knowledge', label: 'Знания' },
+];
+
+function memoryEntryKey(category: MemoryCategory, key: string): string {
+  return `${category}:${key.trim().toLowerCase()}`;
+}
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -47,6 +81,7 @@ type Message = {
     costByn?: number;
     tokens: TokenCounts;
     context?: ContextInfo;
+    memory?: MemoryUpdateInfo;
     requests: LlmRequestLog[];
   };
 };
@@ -63,6 +98,9 @@ type ChatSettings = {
   model: string;
   contextStrategy: ContextStrategy;
   keepLastN: string;
+  useWorkingMemory: boolean;
+  useLongTermMemory: boolean;
+  updateMemory: boolean;
 };
 
 type Chat = {
@@ -109,6 +147,9 @@ function defaultSettings(): ChatSettings {
     model: MODELS[0].value,
     contextStrategy: 'none',
     keepLastN: '20',
+    useWorkingMemory: true,
+    useLongTermMemory: true,
+    updateMemory: true,
   };
 }
 
@@ -148,6 +189,22 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [newBranchName, setNewBranchName] = useState('');
 
+  // Long-term memory is global (shared across chats), unlike working memory
+  // and the dialog itself — so it lives outside the per-chat `chats` state.
+  const [longTermEntries, setLongTermEntries] = useState<MemoryEntry[]>([]);
+  const [latestAddedKeys, setLatestAddedKeys] = useState<Set<string>>(new Set());
+  const [newMemory, setNewMemory] = useState<{ category: MemoryCategory; key: string; value: string }>({
+    category: 'profile',
+    key: '',
+    value: '',
+  });
+
+  // Working memory, per chat id — fetched on first view of a chat and kept in
+  // sync from each ask() response and from explicit clears.
+  const [workingMemoryByChat, setWorkingMemoryByChat] = useState<Record<string, Record<string, string>>>({});
+
+  const [logModalOpen, setLogModalOpen] = useState(false);
+
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
     let loaded: Chat[] = [];
@@ -169,6 +226,44 @@ export default function ChatPage() {
     if (!hydrated) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
   }, [chats, hydrated]);
+
+  async function refreshLongTermMemory() {
+    try {
+      const response = await fetch('/api/backend/memory');
+      if (!response.ok) return;
+      const data: { entries: MemoryEntry[] } = await response.json();
+      setLongTermEntries(data.entries);
+    } catch {
+      // Best-effort — the panel just stays at whatever it last had.
+    }
+  }
+
+  // Long-term memory is global, so it's loaded once, not per chat.
+  useEffect(() => {
+    if (!hydrated) return;
+    refreshLongTermMemory();
+  }, [hydrated]);
+
+  // Working memory is per chat — fetch it the first time a chat is viewed
+  // (e.g. after a page reload) rather than on every render.
+  useEffect(() => {
+    if (!hydrated || !activeChatId || activeChatId in workingMemoryByChat) return;
+    fetch(`/api/backend/agents/${activeChatId}/memory/working`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { working: Record<string, string> } | null) => {
+        if (data) setWorkingMemoryByChat((prev) => ({ ...prev, [activeChatId]: data.working }));
+      })
+      .catch(() => {});
+  }, [hydrated, activeChatId, workingMemoryByChat]);
+
+  useEffect(() => {
+    if (!logModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setLogModalOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [logModalOpen]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const isActiveLoading = activeChatId ? loadingChatIds.has(activeChatId) : false;
@@ -329,6 +424,44 @@ export default function ChatPage() {
     }
   }
 
+  async function clearWorkingMemory(chatId: string) {
+    setWorkingMemoryByChat((prev) => ({ ...prev, [chatId]: {} }));
+    try {
+      await fetch(`/api/backend/agents/${chatId}/memory/working`, { method: 'DELETE' });
+    } catch {
+      // Best-effort — worst case it comes back on the next turn's response.
+    }
+  }
+
+  async function addLongTermEntry(event: FormEvent) {
+    event.preventDefault();
+    const key = newMemory.key.trim();
+    const value = newMemory.value.trim();
+    if (!key || !value) return;
+    try {
+      const response = await fetch('/api/backend/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: newMemory.category, key, value }),
+      });
+      if (response.ok) {
+        setNewMemory({ category: newMemory.category, key: '', value: '' });
+        await refreshLongTermMemory();
+      }
+    } catch {
+      // Best-effort manual add — leave the form filled in so the user can retry.
+    }
+  }
+
+  async function deleteLongTermEntry(id: string) {
+    setLongTermEntries((prev) => prev.filter((e) => e.id !== id));
+    try {
+      await fetch(`/api/backend/memory/${id}`, { method: 'DELETE' });
+    } catch {
+      // Best-effort — a stale refresh will bring it back if the delete failed.
+    }
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const chatId = activeChatId;
@@ -363,6 +496,11 @@ export default function ChatPage() {
             strategy: settings.contextStrategy,
             keepLastN: Number.isFinite(parsedKeepLastN) && parsedKeepLastN >= 0 ? parsedKeepLastN : 20,
           },
+          memory: {
+            useWorking: settings.useWorkingMemory,
+            useLongTerm: settings.useLongTermMemory,
+            update: settings.updateMemory,
+          },
         }),
       });
 
@@ -378,6 +516,7 @@ export default function ChatPage() {
         costByn?: number;
         tokens: TokenCounts;
         context?: ContextInfo;
+        memory?: MemoryUpdateInfo;
         requests: LlmRequestLog[];
       } = await response.json();
 
@@ -394,6 +533,7 @@ export default function ChatPage() {
               costByn: data.costByn,
               tokens: data.tokens,
               context: data.context,
+              memory: data.memory,
               requests: data.requests,
             },
           },
@@ -412,6 +552,14 @@ export default function ChatPage() {
         return next;
       });
 
+      if (data.memory) {
+        setWorkingMemoryByChat((prev) => ({ ...prev, [chatId]: data.memory!.working }));
+        if (data.memory.longTermAdded.length > 0) {
+          setLatestAddedKeys(new Set(data.memory.longTermAdded.map((p) => memoryEntryKey(p.category, p.key))));
+          refreshLongTermMemory();
+        }
+      }
+
       if (settings.contextStrategy === 'branching') {
         refreshBranches(chatId);
       }
@@ -428,6 +576,7 @@ export default function ChatPage() {
 
   const settings = activeChat.settings;
   const isBranching = settings.contextStrategy === 'branching';
+  const currentWorkingMemory = workingMemoryByChat[activeChat.id] ?? {};
 
   return (
     <main className="mx-auto flex h-screen max-w-[100rem] gap-4 overflow-hidden bg-paper px-6 py-10 text-ink">
@@ -722,22 +871,188 @@ export default function ChatPage() {
         </form>
       </div>
 
-      <aside className="flex w-96 shrink-0 flex-col gap-2 overflow-hidden">
-        <h2 className="shrink-0 text-sm font-medium text-pine">
-          Фактический запрос {latestRequests && latestRequests.length > 1 ? `(${latestRequests.length})` : ''}
-        </h2>
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-black/10 bg-white p-3 text-xs">
-          {!latestRequests && <p className="text-[#5c5c5c]">Здесь появится последний запрос к модели.</p>}
-          {latestRequests?.map((req, reqIndex) => (
-            <div key={reqIndex} className="rounded-md border border-black/10 p-2">
-              <p className="mb-1 font-mono font-semibold text-pine">{req.label}</p>
-              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-ink">
-                {JSON.stringify(req.body, null, 2)}
-              </pre>
+      <aside className="flex w-96 shrink-0 flex-col gap-3 overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-pine">Память агента</h2>
+        </div>
+
+        <div className="shrink-0 flex flex-wrap gap-3 rounded-lg border border-black/10 bg-white p-2 text-xs">
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={settings.useWorkingMemory}
+              onChange={(event) => updateSettings(activeChat.id, { useWorkingMemory: event.target.checked })}
+            />
+            рабочая
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={settings.useLongTermMemory}
+              onChange={(event) => updateSettings(activeChat.id, { useLongTermMemory: event.target.checked })}
+            />
+            долговременная
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={settings.updateMemory}
+              onChange={(event) => updateSettings(activeChat.id, { updateMemory: event.target.checked })}
+            />
+            обновлять
+          </label>
+        </div>
+
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
+          <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+            <h3 className="mb-1 font-medium text-pine">Кратковременная (текущий диалог)</h3>
+            <p className="text-[#5c5c5c]">
+              Сообщений в чате: {activeChat.messages.length}
+              {latestContext && <> · отправлено в контексте последнего запроса: {latestContext.recentMessageCount}</>}
+            </p>
+          </section>
+
+          <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+            <div className="mb-1 flex items-center justify-between">
+              <h3 className="font-medium text-pine">Рабочая (текущая задача)</h3>
+              <button
+                type="button"
+                onClick={() => clearWorkingMemory(activeChat.id)}
+                className="text-[11px] text-[#5c5c5c] hover:text-red-600"
+              >
+                Очистить
+              </button>
             </div>
-          ))}
+            {Object.keys(currentWorkingMemory).length === 0 ? (
+              <p className="text-[#5c5c5c]">Пока пусто.</p>
+            ) : (
+              <ul className="flex flex-col gap-0.5">
+                {Object.entries(currentWorkingMemory).map(([key, value]) => (
+                  <li key={key}>
+                    <span className="font-mono text-pine">{key}:</span> {value}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+            <h3 className="mb-2 font-medium text-pine">Долговременная (профиль, решения, знания)</h3>
+            {MEMORY_CATEGORIES.map(({ value: category, label }) => {
+              const items = longTermEntries.filter((e) => e.category === category);
+              return (
+                <div key={category} className="mb-2">
+                  <p className="mb-0.5 font-medium text-[#5c5c5c]">{label}</p>
+                  {items.length === 0 && <p className="text-[#5c5c5c]">—</p>}
+                  <ul className="flex flex-col gap-0.5">
+                    {items.map((entry) => (
+                      <li
+                        key={entry.id}
+                        className={`flex items-start justify-between gap-2 rounded px-1 ${
+                          latestAddedKeys.has(memoryEntryKey(entry.category, entry.key)) ? 'bg-pine/10' : ''
+                        }`}
+                      >
+                        <span>
+                          <span className="font-mono text-pine">{entry.key}:</span> {entry.value}
+                        </span>
+                        <button
+                          type="button"
+                          title="Удалить"
+                          onClick={() => deleteLongTermEntry(entry.id)}
+                          className="shrink-0 text-[#5c5c5c] hover:text-red-600"
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+
+            <form onSubmit={addLongTermEntry} className="mt-2 flex flex-col gap-1 border-t border-black/10 pt-2">
+              <select
+                value={newMemory.category}
+                onChange={(event) => setNewMemory({ ...newMemory, category: event.target.value as MemoryCategory })}
+                className="rounded-md border border-black/10 px-2 py-1"
+              >
+                {MEMORY_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={newMemory.key}
+                onChange={(event) => setNewMemory({ ...newMemory, key: event.target.value })}
+                placeholder="ключ (например: имя)"
+                className="rounded-md border border-black/10 px-2 py-1"
+              />
+              <input
+                type="text"
+                value={newMemory.value}
+                onChange={(event) => setNewMemory({ ...newMemory, value: event.target.value })}
+                placeholder="значение"
+                className="rounded-md border border-black/10 px-2 py-1"
+              />
+              <button
+                type="submit"
+                disabled={!newMemory.key.trim() || !newMemory.value.trim()}
+                className="rounded-md bg-pine px-3 py-1 text-white disabled:opacity-50"
+              >
+                Добавить вручную
+              </button>
+            </form>
+          </section>
         </div>
       </aside>
+
+      <button
+        type="button"
+        onClick={() => setLogModalOpen(true)}
+        className="fixed bottom-6 right-6 z-10 rounded-full bg-pine px-4 py-2 text-sm text-white shadow-lg hover:opacity-90"
+      >
+        Лог запросов{latestRequests && latestRequests.length > 1 ? ` (${latestRequests.length})` : ''}
+      </button>
+
+      {logModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+          onClick={() => setLogModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-2xl flex-col gap-3 overflow-hidden rounded-lg bg-white p-4 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between">
+              <h2 className="text-sm font-medium text-pine">
+                Фактический запрос {latestRequests && latestRequests.length > 1 ? `(${latestRequests.length})` : ''}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setLogModalOpen(false)}
+                className="rounded px-2 text-[#5c5c5c] hover:bg-black/5 hover:text-ink"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto text-xs">
+              {!latestRequests && <p className="text-[#5c5c5c]">Здесь появится последний запрос к модели.</p>}
+              {latestRequests?.map((req, reqIndex) => (
+                <div key={reqIndex} className="rounded-md border border-black/10 p-2">
+                  <p className="mb-1 font-mono font-semibold text-pine">{req.label}</p>
+                  <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-ink">
+                    {JSON.stringify(req.body, null, 2)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

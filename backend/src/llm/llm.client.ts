@@ -20,6 +20,10 @@ export interface AskOptions {
   summary?: string;
   /** Sticky-facts key-value memory, formatted as "key: value" lines. */
   facts?: string;
+  /** Working memory: task-scoped data for the current chat only (see memory model, Day 11). */
+  workingMemory?: string;
+  /** Long-term memory: profile/decisions/knowledge that persists across chats (see memory model, Day 11). */
+  longTermMemory?: string;
 }
 
 export interface LlmUsage {
@@ -95,11 +99,27 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     // Its own message (not folded into the instructions above) so the model
     // doesn't skim past it — this is the only record of everything that
     // happened before the messages below.
+    ...(options.longTermMemory
+      ? [
+          {
+            role: 'system',
+            content: `Long-term memory — true across all conversations with this user, not just this one (profile, past decisions, general knowledge): ${options.longTermMemory}`,
+          },
+        ]
+      : []),
     ...(options.summary
       ? [
           {
             role: 'system',
             content: `Summary of the earlier part of this conversation (older messages were dropped to save context — treat this as ground truth for what was said before): ${options.summary}`,
+          },
+        ]
+      : []),
+    ...(options.workingMemory
+      ? [
+          {
+            role: 'system',
+            content: `Working memory — data scoped to the current task in this chat only, not necessarily true elsewhere: ${options.workingMemory}`,
           },
         ]
       : []),

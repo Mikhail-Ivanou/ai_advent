@@ -8,6 +8,8 @@ import {
   callLlmWithReasoning,
   estimateCostByn,
 } from './llm.client';
+import { routeMemory } from './memory-router';
+import { LongTermMemoryProposal } from '../memory/memory.types';
 import { countHistoryTokens, countTokens } from './tokenizer';
 
 export interface TokenCounts {
@@ -46,6 +48,34 @@ export interface ContextInfo {
   branches?: { id: string; messageCount: number }[];
 }
 
+/**
+ * The memory model (Day 11): three layers, stored and reasoned about
+ * separately —
+ * - short-term: the current dialog (`Agent.history` / the active context
+ *   strategy above — nothing new needed here, it's what Day 9/10 already do).
+ * - working: `Agent.workingMemory`, task-scoped data for THIS chat only.
+ * - long-term: profile/decisions/knowledge, global across chats — owned by
+ *   MemoryService, not the Agent, so it survives a chat being deleted.
+ */
+export interface MemoryConfig {
+  /** Inject working memory into the prompt this turn. Default true. */
+  useWorking?: boolean;
+  /** Inject long-term memory into the prompt this turn. Default true. */
+  useLongTerm?: boolean;
+  /** Run the memory-routing step after this turn to update working/long-term memory. Default true. */
+  update?: boolean;
+}
+
+export interface MemoryInfo {
+  working: Record<string, string>;
+  usedWorking: boolean;
+  usedLongTerm: boolean;
+  /** Long-term facts this turn's routing step proposed — already applied to the global store by the caller (AgentsService). */
+  longTermAdded: LongTermMemoryProposal[];
+  /** Present only on a turn that actually ran the routing step. */
+  update?: { usage?: LlmUsage; costByn?: number };
+}
+
 export interface AgentAskResult {
   answer: string;
   model: string;
@@ -54,7 +84,8 @@ export interface AgentAskResult {
   costByn?: number;
   tokens: TokenCounts;
   context?: ContextInfo;
-  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction calls. */
+  memory?: MemoryInfo;
+  /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing calls. */
   requests: LlmRequestLog[];
 }
 
@@ -98,6 +129,12 @@ ${formatChunkForSummary(chunk)}
 function formatFacts(facts: Record<string, string>): string {
   const entries = Object.entries(facts);
   if (entries.length === 0) return '(пока ничего не известно)';
+  return entries.map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+function formatWorkingMemory(working: Record<string, string>): string {
+  const entries = Object.entries(working);
+  if (entries.length === 0) return '(пока пусто)';
   return entries.map(([key, value]) => `${key}: ${value}`).join('\n');
 }
 
@@ -165,6 +202,8 @@ export class Agent {
   summary: string;
   summarizedThroughIndex: number;
   facts: Record<string, string>;
+  /** Working memory (Day 11): task-scoped data for this chat only — never shared with other chats. */
+  workingMemory: Record<string, string>;
 
   constructor(
     readonly id: string,
@@ -173,12 +212,14 @@ export class Agent {
     summary: string = '',
     summarizedThroughIndex: number = 0,
     facts: Record<string, string> = {},
+    workingMemory: Record<string, string> = {},
   ) {
     this.branches = branches;
     this.activeBranchId = activeBranchId;
     this.summary = summary;
     this.summarizedThroughIndex = summarizedThroughIndex;
     this.facts = facts;
+    this.workingMemory = workingMemory;
   }
 
   /** The active branch's messages — a live reference, so pushing onto it mutates `branches` directly. */
@@ -211,14 +252,28 @@ export class Agent {
     return Object.entries(this.branches).map(([id, messages]) => ({ id, messageCount: messages.length }));
   }
 
+  /** Explicit reset of the working layer — e.g. when the user's done with the current task and doesn't want stale task data leaking into the next one. */
+  clearWorkingMemory(): void {
+    this.workingMemory = {};
+  }
+
   async ask(
     prompt: string,
     reasoningMode?: ReasoningMode,
     options?: AskOptions,
     contextConfig?: ContextConfig,
+    memoryConfig?: MemoryConfig,
+    /** Long-term memory formatted for the prompt — owned by MemoryService, passed in since Agent doesn't hold it. */
+    longTermMemoryText?: string,
   ): Promise<AgentAskResult> {
     const strategy = contextConfig?.strategy ?? 'none';
     const keepLastN = Math.max(0, contextConfig?.keepLastN ?? 0);
+
+    const useWorkingMemory = memoryConfig?.useWorking ?? true;
+    const useLongTermMemory = memoryConfig?.useLongTerm ?? true;
+    const updateMemory = memoryConfig?.update ?? true;
+    const workingMemoryForPrompt = useWorkingMemory ? formatWorkingMemory(this.workingMemory) : undefined;
+    const longTermMemoryForPrompt = useLongTermMemory ? longTermMemoryText : undefined;
 
     let factsUpdate: ContextInfo['factsUpdate'];
     let factsRequests: LlmRequestLog[] = [];
@@ -261,7 +316,9 @@ export class Agent {
     const historyTokens =
       countHistoryTokens(contextHistory) +
       (summaryForPrompt ? countTokens(summaryForPrompt) : 0) +
-      (factsForPrompt ? countTokens(factsForPrompt) : 0);
+      (factsForPrompt ? countTokens(factsForPrompt) : 0) +
+      (workingMemoryForPrompt ? countTokens(workingMemoryForPrompt) : 0) +
+      (longTermMemoryForPrompt ? countTokens(longTermMemoryForPrompt) : 0);
 
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, {
@@ -269,6 +326,8 @@ export class Agent {
       history: contextHistory,
       summary: summaryForPrompt,
       facts: factsForPrompt,
+      workingMemory: workingMemoryForPrompt,
+      longTermMemory: longTermMemoryForPrompt,
     });
     const responseTimeMs = Date.now() - start;
     const costByn = estimateCostByn(result.model, result.usage);
@@ -280,6 +339,32 @@ export class Agent {
     let compactionRequests: LlmRequestLog[] = [];
     if (strategy === 'summary') {
       ({ summaryUpdate, requests: compactionRequests } = await this.maybeCompact(keepLastN, options?.model));
+    }
+
+    // Memory-routing step: an explicit, separate decision about what (if
+    // anything) from this exchange belongs in working memory vs long-term
+    // memory — run after the answer so it can react to what the agent just
+    // said, not just the raw prompt.
+    let memory: MemoryInfo | undefined;
+    let memoryRequests: LlmRequestLog[] = [];
+    if (updateMemory) {
+      const routed = await routeMemory(this.workingMemory, longTermMemoryText, prompt, result.content, options?.model);
+      this.workingMemory = routed.working;
+      memoryRequests = routed.requests;
+      memory = {
+        working: this.workingMemory,
+        usedWorking: useWorkingMemory,
+        usedLongTerm: useLongTermMemory,
+        longTermAdded: routed.longTerm,
+        update: { usage: routed.usage, costByn: routed.costByn },
+      };
+    } else {
+      memory = {
+        working: this.workingMemory,
+        usedWorking: useWorkingMemory,
+        usedLongTerm: useLongTermMemory,
+        longTermAdded: [],
+      };
     }
 
     const context: ContextInfo = {
@@ -310,7 +395,8 @@ export class Agent {
       costByn,
       tokens: { requestTokens, historyTokens, responseTokens },
       context,
-      requests: [...factsRequests, ...result.requests, ...compactionRequests],
+      memory,
+      requests: [...factsRequests, ...result.requests, ...compactionRequests, ...memoryRequests],
     };
   }
 

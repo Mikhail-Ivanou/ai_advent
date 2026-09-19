@@ -1,4 +1,4 @@
-import { ContextConfig } from './agent';
+import { ContextConfig, MemoryConfig } from './agent';
 import { ReasoningMode } from './llm.client';
 
 export class AskDto {
@@ -11,4 +11,6 @@ export class AskDto {
   model?: string;
   /** Which context-management strategy to use for this turn. */
   context?: ContextConfig;
+  /** Which memory layers to use/update for this turn (Day 11). */
+  memory?: MemoryConfig;
 }

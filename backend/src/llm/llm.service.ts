@@ -12,7 +12,13 @@ export class LlmService {
     try {
       // A fresh, history-less agent per call: this endpoint is for one-off asks.
       // Persistent multi-turn conversations go through AgentsService instead.
-      return await new Agent('adhoc').ask(prompt, reasoningMode, options);
+      // Memory is explicitly off — a throwaway agent has no working memory worth
+      // tracking and no chat id to route long-term facts through.
+      return await new Agent('adhoc').ask(prompt, reasoningMode, options, undefined, {
+        useWorking: false,
+        useLongTerm: false,
+        update: false,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';
       this.logger.error(message);

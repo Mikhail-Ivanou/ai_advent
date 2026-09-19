@@ -1,8 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Agent, AgentAskResult, ContextConfig } from './agent';
+import { Agent, AgentAskResult, ContextConfig, MemoryConfig } from './agent';
 import { AskOptions, ChatMessage, ReasoningMode } from './llm.client';
+import { MemoryService } from '../memory/memory.service';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'agents.json');
 
@@ -20,10 +21,18 @@ interface StoredAgentV2 {
   facts: Record<string, string>;
 }
 
-type StoredAgent = ChatMessage[] | StoredAgentV1 | StoredAgentV2;
+interface StoredAgentV3 extends StoredAgentV2 {
+  workingMemory: Record<string, string>;
+}
 
-function isV2(entry: StoredAgent): entry is StoredAgentV2 {
+type StoredAgent = ChatMessage[] | StoredAgentV1 | StoredAgentV2 | StoredAgentV3;
+
+function isV2(entry: StoredAgent): entry is StoredAgentV2 | StoredAgentV3 {
   return !Array.isArray(entry) && 'branches' in entry;
+}
+
+function isV3(entry: StoredAgentV2 | StoredAgentV3): entry is StoredAgentV3 {
+  return 'workingMemory' in entry;
 }
 
 /**
@@ -36,15 +45,26 @@ export class AgentsService implements OnModuleInit {
   private readonly logger = new Logger(AgentsService.name);
   private readonly agents = new Map<string, Agent>();
 
+  constructor(private readonly memoryService: MemoryService) {}
+
   async onModuleInit() {
     try {
       const raw = await fs.readFile(STORE_PATH, 'utf-8');
       const stored: Record<string, StoredAgent> = JSON.parse(raw);
       for (const [id, entry] of Object.entries(stored)) {
         if (isV2(entry)) {
+          const workingMemory = isV3(entry) ? entry.workingMemory : {};
           this.agents.set(
             id,
-            new Agent(id, entry.branches, entry.activeBranchId, entry.summary, entry.summarizedThroughIndex, entry.facts),
+            new Agent(
+              id,
+              entry.branches,
+              entry.activeBranchId,
+              entry.summary,
+              entry.summarizedThroughIndex,
+              entry.facts,
+              workingMemory,
+            ),
           );
           continue;
         }
@@ -52,7 +72,7 @@ export class AgentsService implements OnModuleInit {
         const { history, summary, summarizedThroughIndex } = Array.isArray(entry)
           ? { history: entry, summary: '', summarizedThroughIndex: 0 }
           : entry;
-        this.agents.set(id, new Agent(id, { main: history }, 'main', summary, summarizedThroughIndex, {}));
+        this.agents.set(id, new Agent(id, { main: history }, 'main', summary, summarizedThroughIndex, {}, {}));
       }
       this.logger.log(`Restored ${this.agents.size} agent(s) from ${STORE_PATH}`);
     } catch (error) {
@@ -77,15 +97,32 @@ export class AgentsService implements OnModuleInit {
     reasoningMode?: ReasoningMode,
     options?: AskOptions,
     contextConfig?: ContextConfig,
+    memoryConfig?: MemoryConfig,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
-    const result = await agent.ask(prompt, reasoningMode, options, contextConfig);
+    const longTermMemoryText = this.memoryService.formatForPrompt();
+    const result = await agent.ask(prompt, reasoningMode, options, contextConfig, memoryConfig, longTermMemoryText);
+    // Long-term memory is global, not part of the Agent — apply whatever the
+    // routing step proposed to the shared store here, after the turn's own
+    // state (history, working memory) has already been decided.
+    if (result.memory?.longTermAdded.length) {
+      await this.memoryService.upsertMany(result.memory.longTermAdded, 'agent');
+    }
     await this.persist();
     return result;
   }
 
   getHistory(id: string): ChatMessage[] {
     return this.agents.get(id)?.history ?? [];
+  }
+
+  getWorkingMemory(id: string): Record<string, string> {
+    return this.agents.get(id)?.workingMemory ?? {};
+  }
+
+  async clearWorkingMemory(id: string): Promise<void> {
+    this.getOrCreate(id).clearWorkingMemory();
+    await this.persist();
   }
 
   listBranches(id: string): { branches: { id: string; messageCount: number }[]; activeBranchId: string } {
@@ -126,7 +163,7 @@ export class AgentsService implements OnModuleInit {
   private persist(): Promise<void> {
     // Snapshot synchronously, right now — before any await lets another
     // request's mutation or write interleave.
-    const snapshot: Record<string, StoredAgentV2> = {};
+    const snapshot: Record<string, StoredAgentV3> = {};
     for (const [id, agent] of this.agents) {
       snapshot[id] = {
         branches: agent.branches,
@@ -134,6 +171,7 @@ export class AgentsService implements OnModuleInit {
         summary: agent.summary,
         summarizedThroughIndex: agent.summarizedThroughIndex,
         facts: agent.facts,
+        workingMemory: agent.workingMemory,
       };
     }
 

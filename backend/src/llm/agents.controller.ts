@@ -28,6 +28,7 @@ export class AgentsController {
           model: body.model,
         },
         body.context,
+        body.memory,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';
@@ -38,6 +39,17 @@ export class AgentsController {
   @Get(':id/messages')
   getMessages(@Param('id') id: string): { messages: ChatMessage[] } {
     return { messages: this.agentsService.getHistory(id) };
+  }
+
+  @Get(':id/memory/working')
+  getWorkingMemory(@Param('id') id: string): { working: Record<string, string> } {
+    return { working: this.agentsService.getWorkingMemory(id) };
+  }
+
+  @Delete(':id/memory/working')
+  async clearWorkingMemory(@Param('id') id: string): Promise<{ cleared: true }> {
+    await this.agentsService.clearWorkingMemory(id);
+    return { cleared: true };
   }
 
   @Get(':id/branches')
