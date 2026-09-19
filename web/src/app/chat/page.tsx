@@ -269,6 +269,11 @@ export default function ChatPage() {
   // sync from each ask() response and from explicit clears.
   const [workingMemoryByChat, setWorkingMemoryByChat] = useState<Record<string, Record<string, string>>>({});
 
+  // Collapsed by default — memory management is secondary to the task/profile
+  // panels above it, so it shouldn't eat the sidebar's vertical space until
+  // someone actually wants to look at it.
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+
   // Task state (Day 13), per chat id — same fetch-once-then-sync pattern as
   // working memory above.
   const [taskByChat, setTaskByChat] = useState<Record<string, TaskState | null>>({});
@@ -1214,140 +1219,157 @@ export default function ChatPage() {
           )}
         </section>
 
-        <div className="shrink-0 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-pine">Память агента</h2>
-        </div>
+        <section
+          className={`rounded-lg border border-black/10 bg-white ${
+            memoryPanelOpen ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'shrink-0'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setMemoryPanelOpen((open) => !open)}
+            className="flex w-full shrink-0 items-center justify-between p-3 text-left"
+          >
+            <h2 className="text-sm font-medium text-pine">Память агента</h2>
+            <span className="text-[#5c5c5c]">{memoryPanelOpen ? '▾ свернуть' : '▸ развернуть'}</span>
+          </button>
 
-        <div className="shrink-0 flex flex-wrap gap-3 rounded-lg border border-black/10 bg-white p-2 text-xs">
-          <label className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={settings.useWorkingMemory}
-              onChange={(event) => updateSettings(activeChat.id, { useWorkingMemory: event.target.checked })}
-            />
-            рабочая
-          </label>
-          <label className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={settings.useLongTermMemory}
-              onChange={(event) => updateSettings(activeChat.id, { useLongTermMemory: event.target.checked })}
-            />
-            долговременная
-          </label>
-          <label className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={settings.updateMemory}
-              onChange={(event) => updateSettings(activeChat.id, { updateMemory: event.target.checked })}
-            />
-            обновлять
-          </label>
-        </div>
+          {memoryPanelOpen && (
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-t border-black/10 p-3">
+              <div className="shrink-0 flex flex-wrap gap-3 rounded-lg border border-black/10 bg-paper p-2 text-xs">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={settings.useWorkingMemory}
+                    onChange={(event) => updateSettings(activeChat.id, { useWorkingMemory: event.target.checked })}
+                  />
+                  рабочая
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={settings.useLongTermMemory}
+                    onChange={(event) => updateSettings(activeChat.id, { useLongTermMemory: event.target.checked })}
+                  />
+                  долговременная
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={settings.updateMemory}
+                    onChange={(event) => updateSettings(activeChat.id, { updateMemory: event.target.checked })}
+                  />
+                  обновлять
+                </label>
+              </div>
 
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-          <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
-            <h3 className="mb-1 font-medium text-pine">Кратковременная (текущий диалог)</h3>
-            <p className="text-[#5c5c5c]">
-              Сообщений в чате: {activeChat.messages.length}
-              {latestContext && <> · отправлено в контексте последнего запроса: {latestContext.recentMessageCount}</>}
-            </p>
-          </section>
+              <section className="shrink-0 rounded-lg border border-black/10 p-3 text-xs">
+                <h3 className="mb-1 font-medium text-pine">Кратковременная (текущий диалог)</h3>
+                <p className="text-[#5c5c5c]">
+                  Сообщений в чате: {activeChat.messages.length}
+                  {latestContext && (
+                    <> · отправлено в контексте последнего запроса: {latestContext.recentMessageCount}</>
+                  )}
+                </p>
+              </section>
 
-          <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
-            <div className="mb-1 flex items-center justify-between">
-              <h3 className="font-medium text-pine">Рабочая (текущая задача)</h3>
-              <button
-                type="button"
-                onClick={() => clearWorkingMemory(activeChat.id)}
-                className="text-[11px] text-[#5c5c5c] hover:text-red-600"
-              >
-                Очистить
-              </button>
-            </div>
-            {Object.keys(currentWorkingMemory).length === 0 ? (
-              <p className="text-[#5c5c5c]">Пока пусто.</p>
-            ) : (
-              <ul className="flex flex-col gap-0.5">
-                {Object.entries(currentWorkingMemory).map(([key, value]) => (
-                  <li key={key}>
-                    <span className="font-mono text-pine">{key}:</span> {value}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
-            <h3 className="mb-2 font-medium text-pine">Долговременная (профиль, решения, знания)</h3>
-            {MEMORY_CATEGORIES.map(({ value: category, label }) => {
-              const items = longTermEntries.filter((e) => e.category === category);
-              return (
-                <div key={category} className="mb-2">
-                  <p className="mb-0.5 font-medium text-[#5c5c5c]">{label}</p>
-                  {items.length === 0 && <p className="text-[#5c5c5c]">—</p>}
+              <section className="shrink-0 rounded-lg border border-black/10 p-3 text-xs">
+                <div className="mb-1 flex items-center justify-between">
+                  <h3 className="font-medium text-pine">Рабочая (текущая задача)</h3>
+                  <button
+                    type="button"
+                    onClick={() => clearWorkingMemory(activeChat.id)}
+                    className="text-[11px] text-[#5c5c5c] hover:text-red-600"
+                  >
+                    Очистить
+                  </button>
+                </div>
+                {Object.keys(currentWorkingMemory).length === 0 ? (
+                  <p className="text-[#5c5c5c]">Пока пусто.</p>
+                ) : (
                   <ul className="flex flex-col gap-0.5">
-                    {items.map((entry) => (
-                      <li
-                        key={entry.id}
-                        className={`flex items-start justify-between gap-2 rounded px-1 ${
-                          latestAddedKeys.has(memoryEntryKey(entry.category, entry.key)) ? 'bg-pine/10' : ''
-                        }`}
-                      >
-                        <span>
-                          <span className="font-mono text-pine">{entry.key}:</span> {entry.value}
-                        </span>
-                        <button
-                          type="button"
-                          title="Удалить"
-                          onClick={() => deleteLongTermEntry(entry.id)}
-                          className="shrink-0 text-[#5c5c5c] hover:text-red-600"
-                        >
-                          ×
-                        </button>
+                    {Object.entries(currentWorkingMemory).map(([key, value]) => (
+                      <li key={key}>
+                        <span className="font-mono text-pine">{key}:</span> {value}
                       </li>
                     ))}
                   </ul>
-                </div>
-              );
-            })}
+                )}
+              </section>
 
-            <form onSubmit={addLongTermEntry} className="mt-2 flex flex-col gap-1 border-t border-black/10 pt-2">
-              <select
-                value={newMemory.category}
-                onChange={(event) => setNewMemory({ ...newMemory, category: event.target.value as MemoryCategory })}
-                className="rounded-md border border-black/10 px-2 py-1"
-              >
-                {MEMORY_CATEGORIES.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                value={newMemory.key}
-                onChange={(event) => setNewMemory({ ...newMemory, key: event.target.value })}
-                placeholder="ключ (например: имя)"
-                className="rounded-md border border-black/10 px-2 py-1"
-              />
-              <input
-                type="text"
-                value={newMemory.value}
-                onChange={(event) => setNewMemory({ ...newMemory, value: event.target.value })}
-                placeholder="значение"
-                className="rounded-md border border-black/10 px-2 py-1"
-              />
-              <button
-                type="submit"
-                disabled={!newMemory.key.trim() || !newMemory.value.trim()}
-                className="rounded-md bg-pine px-3 py-1 text-white disabled:opacity-50"
-              >
-                Добавить вручную
-              </button>
-            </form>
-          </section>
-        </div>
+              <section className="shrink-0 rounded-lg border border-black/10 p-3 text-xs">
+                <h3 className="mb-2 font-medium text-pine">Долговременная (профиль, решения, знания)</h3>
+                {MEMORY_CATEGORIES.map(({ value: category, label }) => {
+                  const items = longTermEntries.filter((e) => e.category === category);
+                  return (
+                    <div key={category} className="mb-2">
+                      <p className="mb-0.5 font-medium text-[#5c5c5c]">{label}</p>
+                      {items.length === 0 && <p className="text-[#5c5c5c]">—</p>}
+                      <ul className="flex flex-col gap-0.5">
+                        {items.map((entry) => (
+                          <li
+                            key={entry.id}
+                            className={`flex items-start justify-between gap-2 rounded px-1 ${
+                              latestAddedKeys.has(memoryEntryKey(entry.category, entry.key)) ? 'bg-pine/10' : ''
+                            }`}
+                          >
+                            <span>
+                              <span className="font-mono text-pine">{entry.key}:</span> {entry.value}
+                            </span>
+                            <button
+                              type="button"
+                              title="Удалить"
+                              onClick={() => deleteLongTermEntry(entry.id)}
+                              className="shrink-0 text-[#5c5c5c] hover:text-red-600"
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+
+                <form onSubmit={addLongTermEntry} className="mt-2 flex flex-col gap-1 border-t border-black/10 pt-2">
+                  <select
+                    value={newMemory.category}
+                    onChange={(event) =>
+                      setNewMemory({ ...newMemory, category: event.target.value as MemoryCategory })
+                    }
+                    className="rounded-md border border-black/10 px-2 py-1"
+                  >
+                    {MEMORY_CATEGORIES.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={newMemory.key}
+                    onChange={(event) => setNewMemory({ ...newMemory, key: event.target.value })}
+                    placeholder="ключ (например: имя)"
+                    className="rounded-md border border-black/10 px-2 py-1"
+                  />
+                  <input
+                    type="text"
+                    value={newMemory.value}
+                    onChange={(event) => setNewMemory({ ...newMemory, value: event.target.value })}
+                    placeholder="значение"
+                    className="rounded-md border border-black/10 px-2 py-1"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newMemory.key.trim() || !newMemory.value.trim()}
+                    className="rounded-md bg-pine px-3 py-1 text-white disabled:opacity-50"
+                  >
+                    Добавить вручную
+                  </button>
+                </form>
+              </section>
+            </div>
+          )}
+        </section>
       </aside>
 
       <button
