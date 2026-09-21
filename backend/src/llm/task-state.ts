@@ -120,7 +120,7 @@ ${current ? formatTaskState(current) : '(задачи ещё нет — обыч
 {"task": null} или {"task": {"stage": "planning"|"execution"|"validation"|"done", "goal": "...", "step": "...", "expectedAction": "...", "planApproved": true|false, "validationPassed": true|false}}
 planApproved/validationPassed — true, только если пользователь только что дал согласие в ЭТОМ сообщении; иначе false (уже действующее согласие из прошлых ходов сохраняется автоматически, тебе не нужно его повторять).`;
 
-  const result = await callLlm(prompt, { model, format: 'json', temperature: 0.1, maxOutputTokens: 400 }, 'task-state:update');
+  const result = await callLlm(prompt, { model, format: 'json', temperature: 0.1, maxOutputTokens: 1500 }, 'task-state:update');
   const costByn = estimateCostByn(result.model, result.usage);
 
   let task = current;
