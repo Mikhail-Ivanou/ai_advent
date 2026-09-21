@@ -53,7 +53,7 @@ ${existingLongTermText ? `Уже сохранено в долговременн�
 - "longTerm" — ТОЛЬКО новые или изменившиеся факты (не повторяй то, что уже сохранено и не изменилось). Если ничего нового нет — верни пустой массив.
 - Если для одного из слоёв ничего нет, верни пустой объект/массив для него, а не выдумывай данные.`;
 
-  const result = await callLlm(prompt, { model, format: 'json', temperature: 0.1, maxOutputTokens: 600 }, 'memory:route');
+  const result = await callLlm(prompt, { model, format: 'json', temperature: 0.1, maxOutputTokens: 1000 }, 'memory:route');
   const costByn = estimateCostByn(result.model, result.usage);
 
   let working = existingWorking;
