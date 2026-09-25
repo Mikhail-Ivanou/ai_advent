@@ -178,6 +178,66 @@ const INVARIANT_CATEGORY_LABELS: Record<InvariantCategory, string> = Object.from
   INVARIANT_CATEGORIES.map((c) => [c.value, c.label]),
 ) as Record<InvariantCategory, string>;
 
+// MCP (Day 16): any number of remote MCP servers reached by URL. The backend
+// holds the connections — the page only edits configs and shows what came back.
+type McpTransport = 'auto' | 'http' | 'sse';
+
+type McpTool = { name: string; title?: string; description?: string; inputSchema: Record<string, unknown> };
+
+type McpServer = {
+  id: string;
+  name: string;
+  url: string;
+  transport: McpTransport;
+  headers: Record<string, string>;
+  enabled: boolean;
+  status: 'disconnected' | 'connecting' | 'connected' | 'error';
+  activeTransport?: 'http' | 'sse';
+  serverInfo?: { name: string; version: string };
+  protocolVersion?: string;
+  tools: McpTool[];
+  error?: string;
+};
+
+type McpServerDraft = { name: string; url: string; transport: McpTransport; headers: string };
+
+function emptyMcpServerDraft(): McpServerDraft {
+  return { name: '', url: '', transport: 'auto', headers: '' };
+}
+
+// Headers are edited as "Name: value" lines, like in an HTTP request.
+function parseHeaders(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const colon = line.indexOf(':');
+    if (colon <= 0) continue;
+    headers[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
+  }
+  return headers;
+}
+
+function formatHeaders(headers: Record<string, string>): string {
+  return Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\n');
+}
+
+const MCP_TRANSPORT_LABELS: Record<McpTransport, string> = { auto: 'Авто', http: 'Streamable HTTP', sse: 'SSE' };
+
+const MCP_STATUS_LABELS: Record<McpServer['status'], string> = {
+  disconnected: 'Отключён',
+  connecting: 'Подключение…',
+  connected: 'Подключён',
+  error: 'Ошибка',
+};
+
+const MCP_STATUS_COLORS: Record<McpServer['status'], string> = {
+  disconnected: 'bg-black/20',
+  connecting: 'bg-amber-400',
+  connected: 'bg-green-500',
+  error: 'bg-red-500',
+};
+
 type InvariantViolation = { id: string; title: string; explanation: string };
 
 type InvariantCheckInfo = {
@@ -356,6 +416,16 @@ export default function ChatPage() {
   const [editingInvariantId, setEditingInvariantId] = useState<string | null>(null);
   const [invariantDraft, setInvariantDraft] = useState<InvariantInput>(emptyInvariantInput());
 
+  const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [editingMcpId, setEditingMcpId] = useState<string | null>(null);
+  const [mcpDraft, setMcpDraft] = useState<McpServerDraft>(emptyMcpServerDraft());
+  const [mcpBusyIds, setMcpBusyIds] = useState<Set<string>>(new Set());
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpRequestError, setMcpRequestError] = useState<string | null>(null);
+  // Keyed "<serverId>/<toolName>" — tool names are only unique within a server.
+  const [expandedMcpTool, setExpandedMcpTool] = useState<string | null>(null);
+
   // Load persisted chats on mount, or seed with a single empty chat.
   useEffect(() => {
     let loaded: Chat[] = [];
@@ -429,6 +499,119 @@ export default function ChatPage() {
     refreshInvariants();
   }, [hydrated]);
 
+  async function refreshMcpServers() {
+    try {
+      const response = await fetch('/api/backend/mcp/servers');
+      if (!response.ok) return;
+      const data: { servers: McpServer[] } = await response.json();
+      setMcpServers(data.servers);
+    } catch {
+      // Best-effort — the list just stays at whatever it last had.
+    }
+  }
+
+  // Loaded once so the sidebar button shows the real status; the connections
+  // themselves live on the backend and survive page reloads.
+  useEffect(() => {
+    if (!hydrated) return;
+    refreshMcpServers();
+  }, [hydrated]);
+
+  // Servers restored on backend start-up connect in the background — poll
+  // until none is left mid-handshake.
+  const mcpAnyConnecting = mcpServers.some((s) => s.status === 'connecting');
+  useEffect(() => {
+    if (!mcpAnyConnecting) return;
+    const timer = window.setInterval(refreshMcpServers, 1500);
+    return () => window.clearInterval(timer);
+  }, [mcpAnyConnecting]);
+
+  function replaceMcpServer(server: McpServer) {
+    setMcpServers((prev) => prev.map((s) => (s.id === server.id ? server : s)));
+  }
+
+  async function mcpServerAction(id: string, action: 'connect' | 'disconnect' | 'tools/refresh') {
+    setMcpBusyIds((prev) => new Set(prev).add(id));
+    setMcpRequestError(null);
+    if (action === 'connect') {
+      setMcpServers((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'connecting', error: undefined } : s)));
+    }
+    try {
+      const response = await fetch(`/api/backend/mcp/servers/${id}/${action}`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message ?? `HTTP ${response.status}`);
+      replaceMcpServer(data as McpServer);
+    } catch (error) {
+      setMcpRequestError((error as Error).message);
+      await refreshMcpServers();
+    } finally {
+      setMcpBusyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  function startNewMcpServer() {
+    setEditingMcpId(null);
+    setMcpDraft(emptyMcpServerDraft());
+  }
+
+  function startEditingMcpServer(server: McpServer) {
+    setEditingMcpId(server.id);
+    setMcpDraft({ name: server.name, url: server.url, transport: server.transport, headers: formatHeaders(server.headers) });
+  }
+
+  async function saveMcpServerDraft(event: FormEvent) {
+    event.preventDefault();
+    const payload = {
+      name: mcpDraft.name.trim(),
+      url: mcpDraft.url.trim(),
+      transport: mcpDraft.transport,
+      headers: parseHeaders(mcpDraft.headers),
+    };
+    if (!payload.url) return;
+    setMcpSaving(true);
+    setMcpRequestError(null);
+    if (editingMcpId) {
+      setMcpServers((prev) => prev.map((s) => (s.id === editingMcpId && s.enabled ? { ...s, status: 'connecting' } : s)));
+    }
+    try {
+      // Both create and update connect right away and reply with the result.
+      const response = editingMcpId
+        ? await fetch(`/api/backend/mcp/servers/${editingMcpId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+        : await fetch('/api/backend/mcp/servers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message ?? `HTTP ${response.status}`);
+      startNewMcpServer();
+      await refreshMcpServers();
+    } catch (error) {
+      setMcpRequestError((error as Error).message);
+      await refreshMcpServers();
+    } finally {
+      setMcpSaving(false);
+    }
+  }
+
+  async function deleteMcpServer(id: string) {
+    setMcpServers((prev) => prev.filter((s) => s.id !== id));
+    if (editingMcpId === id) startNewMcpServer();
+    try {
+      await fetch(`/api/backend/mcp/servers/${id}`, { method: 'DELETE' });
+    } finally {
+      await refreshMcpServers();
+    }
+  }
+
   // Working memory is per chat — fetch it the first time a chat is viewed
   // (e.g. after a page reload) rather than on every render.
   useEffect(() => {
@@ -452,16 +635,17 @@ export default function ChatPage() {
   }, [hydrated, activeChatId, taskByChat]);
 
   useEffect(() => {
-    if (!logModalOpen && !profileModalOpen && !invariantModalOpen) return;
+    if (!logModalOpen && !profileModalOpen && !invariantModalOpen && !mcpModalOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setLogModalOpen(false);
       setProfileModalOpen(false);
       setInvariantModalOpen(false);
+      setMcpModalOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [logModalOpen, profileModalOpen, invariantModalOpen]);
+  }, [logModalOpen, profileModalOpen, invariantModalOpen, mcpModalOpen]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const isActiveLoading = activeChatId ? loadingChatIds.has(activeChatId) : false;
@@ -1026,6 +1210,35 @@ export default function ChatPage() {
             </div>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            setMcpModalOpen(true);
+            refreshMcpServers();
+          }}
+          className="flex shrink-0 items-center justify-between gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm hover:border-pine"
+        >
+          <span className="font-medium">MCP</span>
+          <span className="flex items-center gap-1.5 truncate text-xs text-[#5c5c5c]">
+            {mcpServers.length === 0
+              ? 'нет серверов'
+              : `${mcpServers.filter((s) => s.status === 'connected').length}/${mcpServers.length} · ${mcpServers.reduce(
+                  (sum, s) => sum + s.tools.length,
+                  0,
+                )} инстр.`}
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                mcpServers.some((s) => s.status === 'error')
+                  ? MCP_STATUS_COLORS.error
+                  : mcpAnyConnecting
+                    ? MCP_STATUS_COLORS.connecting
+                    : mcpServers.some((s) => s.status === 'connected')
+                      ? MCP_STATUS_COLORS.connected
+                      : MCP_STATUS_COLORS.disconnected
+              }`}
+            />
+          </span>
+        </button>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-hidden">
@@ -1885,6 +2098,205 @@ export default function ChatPage() {
                       onClick={startNewInvariant}
                       className="rounded-md border border-black/10 px-3 py-1"
                     >
+                      Отмена
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mcpModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+          onClick={() => setMcpModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-xl flex-col gap-3 overflow-hidden rounded-lg bg-white p-4 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between">
+              <h2 className="text-sm font-medium text-pine">MCP-серверы</h2>
+              <button
+                type="button"
+                onClick={() => setMcpModalOpen(false)}
+                className="rounded px-2 text-[#5c5c5c] hover:bg-black/5 hover:text-ink"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto text-xs">
+              {mcpRequestError && <p className="whitespace-pre-wrap break-words text-red-600">{mcpRequestError}</p>}
+
+              <ul className="flex flex-col gap-2">
+                {mcpServers.map((server) => {
+                  const busy = mcpBusyIds.has(server.id) || server.status === 'connecting';
+                  return (
+                    <li
+                      key={server.id}
+                      className={`flex flex-col gap-1 rounded-md border p-2 ${
+                        editingMcpId === server.id ? 'border-pine' : 'border-black/10'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="flex items-center gap-1.5">
+                            <span className={`h-2 w-2 shrink-0 rounded-full ${MCP_STATUS_COLORS[server.status]}`} />
+                            <span className="font-medium text-pine">{server.name}</span>
+                            <span className="text-[#5c5c5c]">{MCP_STATUS_LABELS[server.status]}</span>
+                          </p>
+                          <p className="truncate font-mono text-[#5c5c5c]" title={server.url}>
+                            {server.url}
+                          </p>
+                          {server.status === 'connected' && server.serverInfo && (
+                            <p className="text-[#5c5c5c]">
+                              {server.serverInfo.name} {server.serverInfo.version}
+                              {server.activeTransport && ` через ${MCP_TRANSPORT_LABELS[server.activeTransport]}`}
+                              {server.protocolVersion && `, протокол ${server.protocolVersion}`}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          {server.status === 'connected' ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => mcpServerAction(server.id, 'tools/refresh')}
+                                className="text-[#5c5c5c] hover:text-pine disabled:opacity-50"
+                              >
+                                Обновить
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => mcpServerAction(server.id, 'disconnect')}
+                                className="text-[#5c5c5c] hover:text-red-600 disabled:opacity-50"
+                              >
+                                Отключить
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => mcpServerAction(server.id, 'connect')}
+                              className="text-[#5c5c5c] hover:text-pine disabled:opacity-50"
+                            >
+                              Подключить
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => startEditingMcpServer(server)}
+                            className="text-[#5c5c5c] hover:text-pine"
+                          >
+                            Изм.
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteMcpServer(server.id)}
+                            className="text-[#5c5c5c] hover:text-red-600"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+
+                      {server.error && <p className="whitespace-pre-wrap break-words text-red-600">{server.error}</p>}
+
+                      {server.status === 'connected' && (
+                        <div className="flex flex-col gap-1">
+                          <p className="text-[#5c5c5c]">
+                            {server.tools.length === 0 ? 'Сервер не предоставляет инструментов.' : `Инструменты (${server.tools.length}):`}
+                          </p>
+                          {server.tools.map((tool) => {
+                            const key = `${server.id}/${tool.name}`;
+                            return (
+                              <div key={tool.name} className="rounded-md bg-black/[0.03] px-2 py-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedMcpTool(expandedMcpTool === key ? null : key)}
+                                  className="flex w-full items-start justify-between gap-2 text-left"
+                                >
+                                  <span>
+                                    <span className="font-mono font-medium text-pine">{tool.name}</span>
+                                    {tool.title && tool.title !== tool.name && (
+                                      <span className="text-[#5c5c5c]"> — {tool.title}</span>
+                                    )}
+                                  </span>
+                                  <span className="shrink-0 text-[#5c5c5c]">{expandedMcpTool === key ? '▾' : '▸'}</span>
+                                </button>
+                                {tool.description && <p className="text-[#5c5c5c]">{tool.description}</p>}
+                                {expandedMcpTool === key && (
+                                  <pre className="mt-1 whitespace-pre-wrap break-words rounded-md bg-black/5 p-2 font-mono text-[11px]">
+                                    {JSON.stringify(tool.inputSchema, null, 2)}
+                                  </pre>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+                {mcpServers.length === 0 && <p className="text-[#5c5c5c]">Пока не добавлено ни одного сервера.</p>}
+              </ul>
+
+              <form onSubmit={saveMcpServerDraft} className="flex flex-col gap-1 border-t border-black/10 pt-2">
+                <p className="font-medium text-pine">{editingMcpId ? 'Редактировать сервер' : 'Новый сервер'}</p>
+                <input
+                  type="text"
+                  value={mcpDraft.name}
+                  onChange={(event) => setMcpDraft({ ...mcpDraft, name: event.target.value })}
+                  placeholder="Название (необязательно — по умолчанию хост из URL)"
+                  className="rounded-md border border-black/10 px-2 py-1"
+                />
+                <div className="flex gap-1">
+                  <input
+                    type="text"
+                    value={mcpDraft.url}
+                    onChange={(event) => setMcpDraft({ ...mcpDraft, url: event.target.value })}
+                    placeholder="https://example.com/mcp"
+                    className="min-w-0 flex-1 rounded-md border border-black/10 px-2 py-1 font-mono"
+                  />
+                  <select
+                    value={mcpDraft.transport}
+                    onChange={(event) => setMcpDraft({ ...mcpDraft, transport: event.target.value as McpTransport })}
+                    title="Протокол"
+                    className="rounded-md border border-black/10 px-2 py-1"
+                  >
+                    {(Object.keys(MCP_TRANSPORT_LABELS) as McpTransport[]).map((t) => (
+                      <option key={t} value={t}>
+                        {MCP_TRANSPORT_LABELS[t]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <textarea
+                  value={mcpDraft.headers}
+                  onChange={(event) => setMcpDraft({ ...mcpDraft, headers: event.target.value })}
+                  placeholder={'Заголовки, по одному на строку (необязательно)\nAuthorization: Bearer …'}
+                  rows={2}
+                  className="rounded-md border border-black/10 px-2 py-1 font-mono"
+                />
+                <p className="text-[#5c5c5c]">«Авто» пробует Streamable HTTP, а если сервер его не поддерживает — SSE.</p>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={!mcpDraft.url.trim() || mcpSaving}
+                    className="rounded-md bg-pine px-3 py-1 text-white disabled:opacity-50"
+                  >
+                    {mcpSaving ? 'Подключение…' : editingMcpId ? 'Сохранить' : 'Добавить и подключить'}
+                  </button>
+                  {editingMcpId && (
+                    <button type="button" onClick={startNewMcpServer} className="rounded-md border border-black/10 px-3 py-1">
                       Отмена
                     </button>
                   )}
