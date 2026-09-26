@@ -57,13 +57,17 @@ source's id and sha256, so the chain can be checked end to end.
 
 | Tool | Input → output |
 |---|---|
-| `search` | `query`, `source` (`wikipedia` \| `habr` \| `hackernews`), `lang`, `limit` → `doc_id` + list of what it found |
+| `search` | `query`, `sources` (a list from `habr`, `wikipedia`, `hackernews`; default `["habr", "wikipedia"]`), `lang`, `limit` (per service) → `doc_id` + list of what it found, labelled by source |
 | `summarize` | `source_id` (= `doc_id`), `style` (`brief` \| `bullets` \| `detailed`), `max_words` → `summary_id` + text |
 | `save_to_file` | `source_id` (= `summary_id` or `doc_id`), `format` (`md` \| `txt` \| `json`), `filename` → file, size, sha256, link |
 | `run_pipeline` | the same chain in one call, strictly in order; returns a log of steps with a hash check at every handoff |
 
-- **Sources:** the Wikipedia API (article introductions), Habr (the JSON API
-  its own site uses, full article text), and Hacker News (via Algolia).
+- **Sources:** Habr (the JSON API its own site uses, full article text), the
+  Wikipedia API (article introductions), and Hacker News (via Algolia). One
+  call queries all the listed services **in parallel** and merges their
+  results into one document, alternating by rank (Habr #1, Wikipedia #1,
+  Habr #2, …) so that no source crowds out another. If one service is down,
+  the search returns the others' results and reports the failure.
 - **`summarize` needs no API keys.** It's extractive: it scores sentences by
   word frequency (ignoring common words), by position in the text and by
   overlap with the query, skips near-duplicates, and keeps sentences in their

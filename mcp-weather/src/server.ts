@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Forecast, HOURLY_STEP, MAX_DAYS, MAX_HOURLY_DAYS, WeatherError, geocode, getForecast } from './open-meteo.js';
 import { MIN_INTERVAL_MINUTES, Scheduler, SchedulerError, Task, describeSchedule } from './scheduler.js';
-import { FileArtifact, Pipeline, PipelineError, describeStep, shortHash, signFilename } from './pipeline.js';
+import { FileArtifact, Pipeline, PipelineError, SOURCE_LABELS, describeStep, shortHash, signFilename } from './pipeline.js';
 
 // Where saved files can be downloaded from, e.g. http://176.53.174.74:3002 —
 // the server can't know its own public address behind NAT/proxies.
@@ -344,12 +344,15 @@ export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): M
 
   // --- Day 19: search -> summarize -> save_to_file, chained by artifact id ---
 
-  const sourceSchema = z
-    .enum(['wikipedia', 'habr', 'hackernews'])
-    .default('wikipedia')
-    .describe('Где искать: "wikipedia" — энциклопедия, "habr" — статьи Хабра (полный текст), "hackernews" — обсуждения Hacker News.');
+  const sourcesSchema = z
+    .array(z.enum(['wikipedia', 'habr', 'hackernews']))
+    .min(1)
+    .default(['habr', 'wikipedia'])
+    .describe(
+      'Где искать — один или несколько сервисов, опрашиваются параллельно: "habr" — статьи Хабра (полный текст), "wikipedia" — энциклопедия, "hackernews" — Hacker News. По умолчанию ["habr", "wikipedia"].',
+    );
   const langSchema = z.enum(['ru', 'en']).default('ru').describe('Язык поиска (Wikipedia, Habr).');
-  const limitSchema = z.number().int().min(1).max(10).default(3).describe('Сколько результатов взять (1–10).');
+  const limitSchema = z.number().int().min(1).max(10).default(3).describe('Сколько результатов взять с каждого сервиса (1–10).');
   const styleSchema = z
     .enum(['brief', 'bullets', 'detailed'])
     .default('brief')
@@ -367,27 +370,34 @@ export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): M
     {
       title: 'Поиск',
       description:
-        'Шаг 1 пайплайна: ищет по запросу в Wikipedia, Habr или Hacker News и сохраняет найденные тексты на сервере. ' +
+        'Шаг 1 пайплайна: ищет по запросу сразу в нескольких сервисах (по умолчанию Habr и Wikipedia), объединяет результаты в один документ и сохраняет его на сервере. ' +
         'Возвращает doc_id — передай его в summarize (или сразу в save_to_file). Сам текст пересказывать не нужно.',
-      inputSchema: { query: z.string().min(2).describe('Поисковый запрос.'), source: sourceSchema, lang: langSchema, limit: limitSchema },
+      inputSchema: { query: z.string().min(2).describe('Поисковый запрос.'), sources: sourcesSchema, lang: langSchema, limit: limitSchema },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ query, source, lang, limit }, extra) => {
+    async ({ query, sources, lang, limit }, extra) => {
       try {
-        const doc = await pipeline.search({ query, source, lang, limit, ownerId: ownerOf(extra) });
-        const list = doc.items.map((item, i) => `${i + 1}. ${item.title} — ${item.url} (${item.text.length} симв.)`).join('\n');
+        const doc = await pipeline.search({ query, sources, lang, limit, ownerId: ownerOf(extra) });
+        const perSource = doc.sources
+          .map((s) => `${SOURCE_LABELS[s]}: ${doc.items.filter((i) => i.source === s).length}`)
+          .join(', ');
+        const list = doc.items
+          .map((item, i) => `${i + 1}. [${SOURCE_LABELS[item.source]}] ${item.title} — ${item.url} (${item.text.length} симв.)`)
+          .join('\n');
+        const failed = doc.failures.map((f) => `\n⚠ ${SOURCE_LABELS[f.source]} недоступен: ${f.error}`).join('');
         return {
           content: [
             {
               type: 'text',
-              text: `doc_id: ${doc.id}\nНайдено в ${source}: ${doc.items.length}\n${list}\nsha256 ${shortHash(doc.sha256)} · ${doc.content.length} симв. Следующий шаг: summarize(source_id="${doc.id}").`,
+              text: `doc_id: ${doc.id}\nНайдено ${doc.items.length} (${perSource})${failed}\n${list}\nsha256 ${shortHash(doc.sha256)} · ${doc.content.length} симв. Следующий шаг: summarize(source_id="${doc.id}").`,
             },
           ],
           structuredContent: {
             doc_id: doc.id,
             sha256: doc.sha256,
             chars: doc.content.length,
-            items: doc.items.map(({ title, url, publishedAt, author }) => ({ title, url, publishedAt, author })),
+            items: doc.items.map(({ source, title, url, publishedAt, author }) => ({ source, title, url, publishedAt, author })),
+            failures: doc.failures,
           },
         };
       } catch (error) {
@@ -483,7 +493,7 @@ export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): M
         'и проверяя контрольные суммы на каждой передаче. Возвращает журнал шагов, резюме и ссылку на файл.',
       inputSchema: {
         query: z.string().min(2).describe('Поисковый запрос.'),
-        source: sourceSchema,
+        sources: sourcesSchema,
         lang: langSchema,
         limit: limitSchema,
         style: styleSchema,
@@ -496,7 +506,7 @@ export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): M
       try {
         const { steps, file } = await pipeline.run({
           query: args.query,
-          source: args.source,
+          sources: args.sources,
           lang: args.lang,
           limit: args.limit,
           style: args.style,
