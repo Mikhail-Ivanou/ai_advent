@@ -144,6 +144,9 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     instructions.push(
       'You have tools that return real, up-to-date data. When the question needs such data (e.g. the weather), call the matching tool instead of guessing, then answer using what it returned. If a tool returns an error, tell the user plainly what went wrong.',
     );
+    // Scheduling tools take relative delays; the model needs "now" to turn
+    // "remind me at 18:00" into one.
+    instructions.push(`Current date and time: ${new Date().toString()}.`);
   }
 
   const messages: Record<string, unknown>[] = [

@@ -187,17 +187,27 @@ export class McpService implements OnApplicationBootstrap, OnModuleDestroy {
    * (server gone, protocol error) come back as an error result rather than a
    * throw, so a broken tool degrades the answer instead of failing the turn.
    */
-  async callTool(serverId: string, name: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
+  async callTool(
+    serverId: string,
+    name: string,
+    args: Record<string, unknown>,
+    /** Request `_meta` — context for the server that the model neither sees nor controls (e.g. which chat is calling). */
+    meta?: Record<string, unknown>,
+  ): Promise<{ content: string; isError: boolean; structured?: Record<string, unknown> }> {
     const client = this.clients.get(serverId);
     if (!client) return { content: 'MCP-сервер отключён', isError: true };
     try {
-      const result = await client.callTool({ name, arguments: args });
+      const result = await client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) });
       const parts = (Array.isArray(result.content) ? result.content : []).map((part) =>
         part.type === 'text' ? part.text : `[${part.type}]`,
       );
       // Tools with only structured output still need something the model can read.
       if (parts.length === 0 && result.structuredContent) parts.push(JSON.stringify(result.structuredContent));
-      return { content: parts.join('\n') || '(пустой ответ)', isError: result.isError === true };
+      return {
+        content: parts.join('\n') || '(пустой ответ)',
+        isError: result.isError === true,
+        structured: result.structuredContent as Record<string, unknown> | undefined,
+      };
     } catch (error) {
       return { content: describeError(error as Error), isError: true };
     }

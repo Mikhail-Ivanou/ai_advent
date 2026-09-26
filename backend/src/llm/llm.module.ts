@@ -5,12 +5,14 @@ import { InvariantModule } from '../invariant/invariant.module';
 import { McpModule } from '../mcp/mcp.module';
 import { AgentsController } from './agents.controller';
 import { AgentsService } from './agents.service';
+import { BackgroundController } from './background.controller';
+import { BackgroundService } from './background.service';
 import { LlmController } from './llm.controller';
 import { LlmService } from './llm.service';
 
 @Module({
   imports: [MemoryModule, ProfileModule, InvariantModule, McpModule],
-  controllers: [LlmController, AgentsController],
-  providers: [LlmService, AgentsService],
+  controllers: [LlmController, AgentsController, BackgroundController],
+  providers: [LlmService, AgentsService, BackgroundService],
 })
 export class LlmModule {}

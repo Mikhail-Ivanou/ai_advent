@@ -8,6 +8,7 @@ import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 import { InvariantService } from '../invariant/invariant.service';
 import { McpService } from '../mcp/mcp.service';
+import { chatMeta } from '../mcp/mcp.types';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'agents.json');
 
@@ -136,7 +137,7 @@ export class AgentsService implements OnModuleInit {
     mcpConfig?: McpConfig,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
-    const tools = (mcpConfig?.useTools ?? true) ? this.buildMcpToolset() : undefined;
+    const tools = (mcpConfig?.useTools ?? true) ? this.buildMcpToolset(id) : undefined;
     const longTermMemoryText = this.memoryService.formatForPrompt();
     const profileText = this.profileService.formatForPrompt(profileId);
     const activeInvariants = this.invariantService.listActive();
@@ -174,7 +175,7 @@ export class AgentsService implements OnModuleInit {
    * across servers, so names are sanitized and a clash is prefixed with the
    * server's name; the map resolves each back to its server + real tool name.
    */
-  private buildMcpToolset(): LlmToolset | undefined {
+  private buildMcpToolset(chatId: string): LlmToolset | undefined {
     const connected = this.mcpService.listConnectedTools();
     if (connected.length === 0) return undefined;
 
@@ -194,10 +195,27 @@ export class AgentsService implements OnModuleInit {
       execute: async (name, args) => {
         const route = routes.get(name);
         if (!route) return { content: `Unknown tool: ${name}`, isError: true };
-        const result = await this.mcpService.callTool(route.serverId, route.toolName, args);
+        // The chat id rides in `_meta`, so servers can scope state per chat
+        // (e.g. background tasks, Day 18) without trusting the model with it.
+        const result = await this.mcpService.callTool(route.serverId, route.toolName, args, chatMeta(chatId));
         return { ...result, source: { server: route.serverName, tool: route.toolName } };
       },
     };
+  }
+
+  /**
+   * Appends a message produced outside a normal turn (a background task's
+   * reminder or summary, Day 18) to the chat's history, so the agent can refer
+   * to it on the next turn like anything else it said.
+   */
+  async appendAssistantMessage(id: string, content: string): Promise<void> {
+    // Only chats that already exist: a task can only be created from a turn,
+    // so an unknown id is someone else's (e.g. a deploy check) — don't
+    // conjure an empty agent for it.
+    const agent = this.agents.get(id);
+    if (!agent) return;
+    agent.history.push({ role: 'assistant', content });
+    await this.persist();
   }
 
   getHistory(id: string): ChatMessage[] {

@@ -22,6 +22,9 @@ COPY web/package.json web/
 COPY mcp-weather/package.json mcp-weather/
 RUN npm ci --workspace=mcp-weather --include-workspace-root=false --omit=dev && npm cache clean --force
 COPY --from=build /app/mcp-weather/dist mcp-weather/dist
+# Scheduler store (tasks, samples, events). Created here and owned by `node`
+# so a fresh named volume mounted on top inherits the right ownership.
+RUN mkdir -p mcp-weather/data && chown node:node mcp-weather/data
 
 USER node
 WORKDIR /app/mcp-weather

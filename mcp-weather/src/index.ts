@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { timingSafeEqual } from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { Scheduler } from './scheduler.js';
 import { createWeatherServer } from './server.js';
 
 const PORT = Number(process.env.PORT ?? 3002);
@@ -23,6 +24,11 @@ function requireToken(req: Request, res: Response, next: NextFunction) {
   });
 }
 
+// One scheduler for the whole process: MCP servers are created per request,
+// but the tasks and their timer must outlive any single request.
+const scheduler = new Scheduler();
+await scheduler.start();
+
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
@@ -33,7 +39,7 @@ app.get('/health', (_req, res) => {
 // Stateless Streamable HTTP: every POST gets a fresh server + transport, so
 // there's no session state to lose on restart and it scales horizontally.
 app.post('/mcp', requireToken, async (req, res) => {
-  const server = createWeatherServer();
+  const server = createWeatherServer(scheduler);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => {
     void transport.close();

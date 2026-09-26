@@ -40,3 +40,10 @@ export interface McpConnectionState {
 }
 
 export type McpServerView = McpServer & McpConnectionState;
+
+/** `_meta` key our MCP servers read to scope state per chat — see mcp-weather's scheduler. */
+export const CHAT_ID_META_KEY = 'advent/chatId';
+
+export function chatMeta(chatId: string): Record<string, unknown> {
+  return { [CHAT_ID_META_KEY]: chatId };
+}

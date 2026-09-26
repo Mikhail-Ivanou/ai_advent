@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 
 type Usage = {
   promptTokens: number;
@@ -258,9 +258,64 @@ type ToolCallLog = {
   durationMs: number;
 };
 
+// Background tasks (Day 18): scheduled on the MCP server (24/7), created by
+// the model from a chat prompt; each one's reminders/summaries arrive in the
+// chat that created it.
+type BackgroundTask = {
+  id: string;
+  serverId: string;
+  serverName: string;
+  kind: 'weather_watch' | 'reminder';
+  title: string;
+  status: 'active' | 'paused' | 'completed' | 'cancelled';
+  intervalMinutes?: number;
+  summaryEveryMinutes?: number;
+  maxRuns?: number;
+  message?: string;
+  location?: { name: string; country?: string };
+  nextRunAt: string;
+  lastRunAt?: string;
+  runCount: number;
+  lastResult?: string;
+  lastError?: string;
+};
+
+type BackgroundEvent = {
+  id: number;
+  serverId: string;
+  serverName: string;
+  taskId: string;
+  taskTitle: string;
+  type: string;
+  text: string;
+  createdAt: string;
+};
+
+function formatEvery(minutes: number): string {
+  return minutes % 60 === 0 ? `${minutes / 60} ч` : `${minutes} мин`;
+}
+
+function formatRelative(iso: string): string {
+  const diff = Date.parse(iso) - Date.now();
+  const minutes = Math.round(Math.abs(diff) / 60_000);
+  if (minutes < 1) return diff >= 0 ? 'меньше чем через минуту' : 'только что';
+  const text = minutes < 60 ? `${minutes} мин` : `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
+  return diff >= 0 ? `через ${text}` : `${text} назад`;
+}
+
+function describeBackgroundSchedule(task: BackgroundTask): string {
+  if (!task.intervalMinutes) return 'однократно';
+  const parts = [`каждые ${formatEvery(task.intervalMinutes)}`];
+  if (task.summaryEveryMinutes) parts.push(`сводка раз в ${formatEvery(task.summaryEveryMinutes)}`);
+  if (task.maxRuns) parts.push(`${task.runCount}/${task.maxRuns}`);
+  return parts.join(', ');
+}
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
+  /** Set when the message was produced by a background task rather than a reply to a prompt. */
+  background?: { taskTitle: string; type: string; createdAt: string };
   meta?: {
     model: string;
     responseTimeMs: number;
@@ -311,6 +366,8 @@ type Chat = {
   branches?: BranchSummary[];
   activeBranchId?: string;
   branchMessages?: Record<string, Message[]>;
+  /** Last background event already rendered into this chat, so polling never duplicates one. */
+  backgroundEventId?: number;
 };
 
 const CONTEXT_STRATEGIES: { value: ContextStrategy; label: string }[] = [
@@ -418,6 +475,14 @@ export default function ChatPage() {
   // Chat settings are tuned once and then left alone — collapsed by default so
   // the conversation gets the vertical space.
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+
+  const [backgroundByChat, setBackgroundByChat] = useState<Record<string, BackgroundTask[]>>({});
+  const [backgroundBusyKey, setBackgroundBusyKey] = useState<string | null>(null);
+  const [backgroundError, setBackgroundError] = useState<string | null>(null);
+  // The polling interval outlives renders — read the latest chats through a
+  // ref instead of a stale closure.
+  const chatsRef = useRef<Chat[]>([]);
+  chatsRef.current = chats;
 
   // Task state (Day 13), per chat id — same fetch-once-then-sync pattern as
   // working memory above.
@@ -548,6 +613,82 @@ export default function ChatPage() {
     const timer = window.setInterval(refreshMcpServers, 1500);
     return () => window.clearInterval(timer);
   }, [mcpAnyConnecting]);
+
+  async function refreshBackground(chatId: string) {
+    const after = chatsRef.current.find((c) => c.id === chatId)?.backgroundEventId ?? 0;
+    try {
+      const response = await fetch(`/api/backend/agents/${chatId}/background?after=${after}`);
+      if (!response.ok) return;
+      const data: { tasks: BackgroundTask[]; events: BackgroundEvent[] } = await response.json();
+      setBackgroundByChat((prev) => ({ ...prev, [chatId]: data.tasks }));
+      if (data.events.length === 0) return;
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== chatId) return c;
+          // Re-check against the chat's own cursor: two overlapping polls may
+          // both have fetched the same events.
+          const seen = c.backgroundEventId ?? 0;
+          const fresh = data.events.filter((e) => e.id > seen);
+          if (fresh.length === 0) return c;
+          return {
+            ...c,
+            backgroundEventId: Math.max(seen, ...fresh.map((e) => e.id)),
+            messages: [
+              ...c.messages,
+              ...fresh.map((e) => ({
+                role: 'assistant' as const,
+                content: e.text,
+                background: { taskTitle: e.taskTitle, type: e.type, createdAt: e.createdAt },
+              })),
+            ],
+          };
+        }),
+      );
+    } catch {
+      // Best-effort — the next poll will pick it up.
+    }
+  }
+
+  // Only the open chat is polled; the backend keeps an inbox per chat, so
+  // another chat's events are waiting for it when it's opened.
+  useEffect(() => {
+    if (!hydrated || !activeChatId) return;
+    refreshBackground(activeChatId);
+    const timer = window.setInterval(() => refreshBackground(activeChatId), 15_000);
+    return () => window.clearInterval(timer);
+  }, [hydrated, activeChatId]);
+
+  async function backgroundAction(task: BackgroundTask, action: 'active' | 'paused' | 'cancelled' | 'summary') {
+    const chatId = activeChatId;
+    if (!chatId) return;
+    setBackgroundBusyKey(`${task.serverId}/${task.id}`);
+    setBackgroundError(null);
+    try {
+      const endpoint = action === 'summary' ? 'summary' : 'status';
+      const response = await fetch(`/api/backend/agents/${chatId}/background/${task.serverId}/${task.id}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'summary' ? {} : { status: action }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message ?? `HTTP ${response.status}`);
+      if (action === 'summary') {
+        updateMessages(chatId, (messages) => [
+          ...messages,
+          {
+            role: 'assistant',
+            content: data.result,
+            background: { taskTitle: task.title, type: 'summary', createdAt: new Date().toISOString() },
+          },
+        ]);
+      }
+      await refreshBackground(chatId);
+    } catch (error) {
+      setBackgroundError((error as Error).message);
+    } finally {
+      setBackgroundBusyKey(null);
+    }
+  }
 
   function replaceMcpServer(server: McpServer) {
     setMcpServers((prev) => prev.map((s) => (s.id === server.id ? server : s)));
@@ -1187,6 +1328,8 @@ export default function ChatPage() {
       setChatError(chatId, err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setChatLoading(chatId, false);
+      // The turn may have created or changed a background task.
+      refreshBackground(chatId);
     }
   }
 
@@ -1420,6 +1563,91 @@ export default function ChatPage() {
           )}
         </section>
 
+        {(() => {
+          const tasks = backgroundByChat[activeChat.id] ?? [];
+          return (
+            <section className="shrink-0 rounded-lg border border-black/10 bg-white px-4 py-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-pine">Фоновые задачи{tasks.length > 0 && ` (${tasks.length})`}</span>
+                <button
+                  type="button"
+                  onClick={() => refreshBackground(activeChat.id)}
+                  className="text-xs text-[#5c5c5c] hover:text-pine"
+                >
+                  обновить
+                </button>
+              </div>
+              {backgroundError && <p className="text-xs text-red-600">{backgroundError}</p>}
+              {tasks.length === 0 ? (
+                <p className="text-xs text-[#5c5c5c]">
+                  Нет активных задач. Попросите в чате, например: «каждые 30 минут собирай погоду в Минске и раз в
+                  2 часа присылай сводку» или «напомни через 20 минут размяться».
+                </p>
+              ) : (
+                <ul className="mt-1 flex max-h-40 flex-col gap-1 overflow-y-auto">
+                  {tasks.map((task) => {
+                    const key = `${task.serverId}/${task.id}`;
+                    const busy = backgroundBusyKey === key;
+                    return (
+                      <li
+                        key={key}
+                        className="flex items-start justify-between gap-2 rounded-md border border-black/10 px-2 py-1 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <p className="flex items-center gap-1.5">
+                            <span
+                              className={`h-2 w-2 shrink-0 rounded-full ${
+                                task.status === 'paused' ? 'bg-amber-400' : task.lastError ? 'bg-red-500' : 'bg-green-500'
+                              }`}
+                            />
+                            <span>{task.kind === 'weather_watch' ? '🌦' : '⏰'}</span>
+                            <span className="truncate font-medium">{task.title}</span>
+                            <span className="shrink-0 text-[#5c5c5c]">{describeBackgroundSchedule(task)}</span>
+                          </p>
+                          <p className="truncate text-[#5c5c5c]">
+                            {task.status === 'paused' ? 'на паузе' : `следующий запуск ${formatRelative(task.nextRunAt)}`}
+                            {' · '}выполнено {task.runCount}
+                            {task.lastResult && <> · {task.lastResult}</>}
+                            {task.lastError && <span className="text-red-600"> · {task.lastError}</span>}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          {task.kind === 'weather_watch' && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => backgroundAction(task, 'summary')}
+                              className="text-[#5c5c5c] hover:text-pine disabled:opacity-50"
+                            >
+                              Сводка
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => backgroundAction(task, task.status === 'paused' ? 'active' : 'paused')}
+                            className="text-[#5c5c5c] hover:text-pine disabled:opacity-50"
+                          >
+                            {task.status === 'paused' ? 'Продолжить' : 'Пауза'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => backgroundAction(task, 'cancelled')}
+                            className="text-[#5c5c5c] hover:text-red-600 disabled:opacity-50"
+                          >
+                            Отменить
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })()}
+
         {isBranching && (
           <div className="shrink-0 flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white p-3 text-sm">
             <span className="text-xs text-pine">Ветки:</span>
@@ -1467,9 +1695,21 @@ export default function ChatPage() {
               className={message.role === 'user' ? 'self-end text-right' : 'self-start text-left'}
             >
               <span className="mb-1 block text-xs text-pine">
-                {message.role === 'user' ? 'You' : 'Assistant'}
+                {message.role === 'user'
+                  ? 'You'
+                  : message.background
+                    ? `Фоновая задача · ${message.background.taskTitle} · ${new Date(message.background.createdAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}`
+                    : 'Assistant'}
               </span>
-              <p className="inline-block whitespace-pre-wrap rounded-lg bg-paper px-3 py-2">
+              <p
+                className={`inline-block whitespace-pre-wrap rounded-lg px-3 py-2 ${
+                  message.background
+                    ? message.background.type === 'error'
+                      ? 'border border-red-200 bg-red-50'
+                      : 'border border-amber-200 bg-amber-50'
+                    : 'bg-paper'
+                }`}
+              >
                 {message.content}
               </p>
               {message.meta?.toolCalls && message.meta.toolCalls.length > 0 && (

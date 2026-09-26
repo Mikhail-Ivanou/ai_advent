@@ -23,6 +23,30 @@ rows for `hourly`) plus `structuredContent` described by `outputSchema`. An
 unknown city or an unreachable weather service comes back as a result with
 `isError: true`, so the model can read the error and tell the user.
 
+## Background tasks (scheduler)
+
+The same server runs a scheduler with deferred and periodic tasks. It lives
+inside the server process, so on a VM it runs 24/7, independently of the app.
+
+| Tool | Purpose |
+|---|---|
+| `schedule_task` | create a task: `weather_watch` (collect the weather every `interval_minutes` and send an aggregated summary every `summary_every_minutes`) or `reminder` (once after `delay_minutes`, or repeating) |
+| `list_scheduled_tasks` | the chat's tasks: schedule, status, run count, latest result |
+| `get_task_summary` | aggregate over the collected samples: min/max/average temperature, trend, precipitation, prevailing weather |
+| `set_task_status` | `paused` / `active` / `cancelled` |
+| `get_task_events` | what the tasks produced: reminders, summaries, errors (`after_seq` — only newer ones) |
+
+- **Storage:** everything is kept in `data/scheduler.json`: tasks, samples (up
+  to 2,000 per task) and events (up to 1,000). Docker keeps it on the
+  `weather_data` volume, so it survives rebuilds. Writes go through a temporary
+  file followed by a rename, so a crash can't leave a truncated file.
+- **Linking to a chat:** the client sends the chat id in the request's
+  `_meta["advent/chatId"]`; the model neither sees nor sets it. Without `_meta`
+  (e.g. the backend's poller) the tools see every chat's tasks and events.
+- **Execution:** a check runs every `SCHEDULER_TICK_MS` (15 s by default). After
+  downtime, a task runs once and then keeps its normal cadence; missed runs are
+  not replayed as a burst.
+
 ## Local run
 
 ```bash

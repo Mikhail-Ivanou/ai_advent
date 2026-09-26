@@ -12,6 +12,9 @@ services:
       PORT: 3002
     ports:
       - '${WEATHER_BIND:-0.0.0.0}:3002:3002'
+    volumes:
+      # Background tasks must survive rebuilds and restarts.
+      - weather_data:/app/mcp-weather/data
     restart: unless-stopped
 
   caddy:
@@ -31,4 +34,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  weather_data:
   caddy_data:
