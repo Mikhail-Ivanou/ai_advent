@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { timingSafeEqual } from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import * as path from 'path';
+import { FILES_DIR, Pipeline, signFilename } from './pipeline.js';
 import { Scheduler } from './scheduler.js';
 import { createWeatherServer } from './server.js';
 
@@ -28,6 +30,8 @@ function requireToken(req: Request, res: Response, next: NextFunction) {
 // but the tasks and their timer must outlive any single request.
 const scheduler = new Scheduler();
 await scheduler.start();
+const pipeline = new Pipeline();
+await pipeline.load();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -39,7 +43,7 @@ app.get('/health', (_req, res) => {
 // Stateless Streamable HTTP: every POST gets a fresh server + transport, so
 // there's no session state to lose on restart and it scales horizontally.
 app.post('/mcp', requireToken, async (req, res) => {
-  const server = createWeatherServer(scheduler);
+  const server = createWeatherServer(scheduler, pipeline);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => {
     void transport.close();
@@ -54,6 +58,24 @@ app.post('/mcp', requireToken, async (req, res) => {
       res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
     }
   }
+});
+
+// Files written by save_to_file: the bearer token, or the per-file signature
+// from the link save_to_file returned (see signFilename). The name is reduced
+// to its basename so nothing outside FILES_DIR can be requested.
+function requireFileAccess(req: Request, res: Response, next: NextFunction) {
+  const name = path.basename(String(req.params.name));
+  const sig = typeof req.query.sig === 'string' ? Buffer.from(req.query.sig) : undefined;
+  const expected = AUTH_TOKEN ? Buffer.from(signFilename(name, AUTH_TOKEN)) : undefined;
+  if (sig && expected && sig.length === expected.length && timingSafeEqual(sig, expected)) return next();
+  return requireToken(req, res, next);
+}
+
+app.get('/files/:name', requireFileAccess, (req, res) => {
+  const name = path.basename(String(req.params.name));
+  res.sendFile(name, { root: FILES_DIR, dotfiles: 'deny' }, (error) => {
+    if (error && !res.headersSent) res.status(404).json({ error: 'File not found' });
+  });
 });
 
 // No sessions means no server-initiated stream (GET) and nothing to end (DELETE).

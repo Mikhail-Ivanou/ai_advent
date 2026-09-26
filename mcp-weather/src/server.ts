@@ -2,6 +2,18 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Forecast, HOURLY_STEP, MAX_DAYS, MAX_HOURLY_DAYS, WeatherError, geocode, getForecast } from './open-meteo.js';
 import { MIN_INTERVAL_MINUTES, Scheduler, SchedulerError, Task, describeSchedule } from './scheduler.js';
+import { FileArtifact, Pipeline, PipelineError, describeStep, shortHash, signFilename } from './pipeline.js';
+
+// Where saved files can be downloaded from, e.g. http://176.53.174.74:3002 —
+// the server can't know its own public address behind NAT/proxies.
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '') ?? '';
+
+const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN?.trim() || undefined;
+
+function fileLink(file: FileArtifact): string {
+  const url = `${PUBLIC_BASE_URL}/files/${encodeURIComponent(file.filename)}`;
+  return AUTH_TOKEN ? `${url}?sig=${signFilename(file.filename, AUTH_TOKEN)}` : url;
+}
 
 /** The client (our backend) tags every call with the chat it came from; the model never sees or sets this. */
 const OWNER_META_KEY = 'advent/chatId';
@@ -22,7 +34,7 @@ function formatTask(t: Task): string {
 }
 
 function toolError(error: unknown) {
-  if (error instanceof WeatherError || error instanceof SchedulerError) {
+  if (error instanceof WeatherError || error instanceof SchedulerError || error instanceof PipelineError) {
     return { content: [{ type: 'text' as const, text: error.message }], isError: true };
   }
   throw error;
@@ -117,8 +129,8 @@ const outputSchema = {
 };
 
 /** One server instance per request (the HTTP transport runs stateless), so this must stay cheap. */
-export function createWeatherServer(scheduler: Scheduler): McpServer {
-  const server = new McpServer({ name: 'advent-weather', version: '0.2.0' });
+export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): McpServer {
+  const server = new McpServer({ name: 'advent-weather', version: '0.3.0' });
 
   server.registerTool(
     'get_weather_forecast',
@@ -327,6 +339,193 @@ export function createWeatherServer(scheduler: Scheduler): McpServer {
         ],
         structuredContent: { events, lastSeq: events.length ? events[events.length - 1].seq : after_seq },
       };
+    },
+  );
+
+  // --- Day 19: search -> summarize -> save_to_file, chained by artifact id ---
+
+  const sourceSchema = z
+    .enum(['wikipedia', 'habr', 'hackernews'])
+    .default('wikipedia')
+    .describe('Где искать: "wikipedia" — энциклопедия, "habr" — статьи Хабра (полный текст), "hackernews" — обсуждения Hacker News.');
+  const langSchema = z.enum(['ru', 'en']).default('ru').describe('Язык поиска (Wikipedia, Habr).');
+  const limitSchema = z.number().int().min(1).max(10).default(3).describe('Сколько результатов взять (1–10).');
+  const styleSchema = z
+    .enum(['brief', 'bullets', 'detailed'])
+    .default('brief')
+    .describe('"brief" — абзац, "bullets" — список тезисов, "detailed" — подробно, по каждому источнику.');
+  const maxWordsSchema = z.number().int().min(20).max(1000).optional().describe('Примерный предел длины резюме в словах.');
+  const formatSchema = z.enum(['md', 'txt', 'json']).default('md').describe('Формат файла.');
+  const filenameSchema = z
+    .string()
+    .max(60)
+    .optional()
+    .describe('Имя файла без расширения (по умолчанию — из запроса и времени).');
+
+  server.registerTool(
+    'search',
+    {
+      title: 'Поиск',
+      description:
+        'Шаг 1 пайплайна: ищет по запросу в Wikipedia, Habr или Hacker News и сохраняет найденные тексты на сервере. ' +
+        'Возвращает doc_id — передай его в summarize (или сразу в save_to_file). Сам текст пересказывать не нужно.',
+      inputSchema: { query: z.string().min(2).describe('Поисковый запрос.'), source: sourceSchema, lang: langSchema, limit: limitSchema },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ query, source, lang, limit }, extra) => {
+      try {
+        const doc = await pipeline.search({ query, source, lang, limit, ownerId: ownerOf(extra) });
+        const list = doc.items.map((item, i) => `${i + 1}. ${item.title} — ${item.url} (${item.text.length} симв.)`).join('\n');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `doc_id: ${doc.id}\nНайдено в ${source}: ${doc.items.length}\n${list}\nsha256 ${shortHash(doc.sha256)} · ${doc.content.length} симв. Следующий шаг: summarize(source_id="${doc.id}").`,
+            },
+          ],
+          structuredContent: {
+            doc_id: doc.id,
+            sha256: doc.sha256,
+            chars: doc.content.length,
+            items: doc.items.map(({ title, url, publishedAt, author }) => ({ title, url, publishedAt, author })),
+          },
+        };
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'summarize',
+    {
+      title: 'Резюме',
+      description:
+        'Шаг 2 пайплайна: делает резюме документа, найденного search, по его id — без ключей API, выбором ключевых предложений. ' +
+        'Возвращает summary_id и текст резюме; summary_id передай в save_to_file.',
+      inputSchema: {
+        source_id: z.string().describe('doc_id, который вернул search.'),
+        style: styleSchema,
+        max_words: maxWordsSchema,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ source_id, style, max_words }, extra) => {
+      try {
+        const summary = await pipeline.summarize({ sourceId: source_id, style, maxWords: max_words, ownerId: ownerOf(extra) });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `summary_id: ${summary.id} (из ${summary.parentId}, sha256 источника ${shortHash(summary.parentSha256!)})\nВыбрано предложений: ${summary.sentencesPicked} из ${summary.sentencesTotal}\n\n${summary.content}\n\nСледующий шаг: save_to_file(source_id="${summary.id}").`,
+            },
+          ],
+          structuredContent: {
+            summary_id: summary.id,
+            parent_id: summary.parentId,
+            parent_sha256: summary.parentSha256,
+            sha256: summary.sha256,
+            summary: summary.content,
+            sources: summary.sources,
+          },
+        };
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'save_to_file',
+    {
+      title: 'Сохранить в файл',
+      description:
+        'Шаг 3 пайплайна: сохраняет результат предыдущего шага (summary_id или doc_id) в файл на сервере вместе со списком источников. ' +
+        'Проверяет, что в файл записано ровно то, что передано, и возвращает имя файла, размер, sha256 и ссылку для скачивания.',
+      inputSchema: {
+        source_id: z.string().describe('summary_id от summarize или doc_id от search.'),
+        format: formatSchema,
+        filename: filenameSchema,
+      },
+    },
+    async ({ source_id, format, filename }, extra) => {
+      try {
+        const file = await pipeline.saveToFile({ sourceId: source_id, format, filename, ownerId: ownerOf(extra) });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Файл сохранён: ${file.filename} (${file.bytes} байт, sha256 ${shortHash(file.fileSha256)})\nИсточник: ${file.parentId} (sha256 ${shortHash(file.parentSha256!)}) — содержимое совпадает ✓\nСкачать: ${fileLink(file)}`,
+            },
+          ],
+          structuredContent: {
+            file_id: file.id,
+            filename: file.filename,
+            bytes: file.bytes,
+            file_sha256: file.fileSha256,
+            parent_id: file.parentId,
+            parent_sha256: file.parentSha256,
+            url: fileLink(file),
+          },
+        };
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'run_pipeline',
+    {
+      title: 'Пайплайн: поиск → резюме → файл',
+      description:
+        'Выполняет всю цепочку за один вызов, строго по порядку: search → summarize → save_to_file, передавая данные между шагами по id ' +
+        'и проверяя контрольные суммы на каждой передаче. Возвращает журнал шагов, резюме и ссылку на файл.',
+      inputSchema: {
+        query: z.string().min(2).describe('Поисковый запрос.'),
+        source: sourceSchema,
+        lang: langSchema,
+        limit: limitSchema,
+        style: styleSchema,
+        max_words: maxWordsSchema,
+        format: formatSchema,
+        filename: filenameSchema,
+      },
+    },
+    async (args, extra) => {
+      try {
+        const { steps, file } = await pipeline.run({
+          query: args.query,
+          source: args.source,
+          lang: args.lang,
+          limit: args.limit,
+          style: args.style,
+          maxWords: args.max_words,
+          format: args.format,
+          filename: args.filename,
+          ownerId: ownerOf(extra),
+        });
+        const allOk = steps.every((s) => s.handoffOk !== false);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: [
+                `Пайплайн выполнен${allOk ? ', все передачи данных проверены ✓' : ' с ошибкой передачи данных ✗'}:`,
+                ...steps.map((s, i) => `${i + 1}. ${describeStep(s)}`),
+                '',
+                'Резюме:',
+                file.content,
+                '',
+                `Файл: ${file.filename} (${file.bytes} байт) — ${fileLink(file)}`,
+              ].join('\n'),
+            },
+          ],
+          structuredContent: { steps, ok: allOk, file_id: file.id, filename: file.filename, url: fileLink(file), summary: file.content },
+        };
+      } catch (error) {
+        return toolError(error);
+      }
     },
   );
 

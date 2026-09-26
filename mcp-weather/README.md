@@ -47,6 +47,36 @@ inside the server process, so on a VM it runs 24/7, independently of the app.
   downtime, a task runs once and then keeps its normal cadence; missed runs are
   not replayed as a burst.
 
+## Pipeline: search → summarize → save_to_file
+
+Three tools that pass data **by id**, not as text. Each step stores its result
+on the server (`data/pipeline.json`) and returns an id, and the next step takes
+that id. So the model doesn't retype text between steps, which means it can't
+distort it and doesn't spend tokens on it. Each result also records its
+source's id and sha256, so the chain can be checked end to end.
+
+| Tool | Input → output |
+|---|---|
+| `search` | `query`, `source` (`wikipedia` \| `habr` \| `hackernews`), `lang`, `limit` → `doc_id` + list of what it found |
+| `summarize` | `source_id` (= `doc_id`), `style` (`brief` \| `bullets` \| `detailed`), `max_words` → `summary_id` + text |
+| `save_to_file` | `source_id` (= `summary_id` or `doc_id`), `format` (`md` \| `txt` \| `json`), `filename` → file, size, sha256, link |
+| `run_pipeline` | the same chain in one call, strictly in order; returns a log of steps with a hash check at every handoff |
+
+- **Sources:** the Wikipedia API (article introductions), Habr (the JSON API
+  its own site uses, full article text), and Hacker News (via Algolia).
+- **`summarize` needs no API keys.** It's extractive: it scores sentences by
+  word frequency (ignoring common words), by position in the text and by
+  overlap with the query, skips near-duplicates, and keeps sentences in their
+  original order.
+- **Checks:** every read compares the stored sha256. `save_to_file` re-reads
+  the file from disk and checks that it contains exactly the text it was
+  given. A chat sees only its own artifacts (`_meta["advent/chatId"]`).
+- **Download:** `GET /files/<name>` with the bearer token, or via the link from
+  `save_to_file`. That link carries a signature of that particular filename
+  (HMAC with the token as the key), so it opens in a browser without the
+  header, opens only that file, and doesn't reveal the token. The link needs
+  `PUBLIC_BASE_URL` in `.env`.
+
 ## Local run
 
 ```bash
