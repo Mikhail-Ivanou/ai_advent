@@ -1588,28 +1588,40 @@ export default function ChatPage() {
                   {tasks.map((task) => {
                     const key = `${task.serverId}/${task.id}`;
                     const busy = backgroundBusyKey === key;
+                    const status =
+                      task.status === 'paused' ? 'на паузе' : `следующий запуск ${formatRelative(task.nextRunAt)}`;
                     return (
                       <li
                         key={key}
-                        className="flex items-start justify-between gap-2 rounded-md border border-black/10 px-2 py-1 text-xs"
+                        className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 rounded-md border border-black/10 px-2 py-1 text-xs"
                       >
-                        <div className="min-w-0">
-                          <p className="flex items-center gap-1.5">
-                            <span
-                              className={`h-2 w-2 shrink-0 rounded-full ${
-                                task.status === 'paused' ? 'bg-amber-400' : task.lastError ? 'bg-red-500' : 'bg-green-500'
-                              }`}
-                            />
-                            <span>{task.kind === 'weather_watch' ? '🌦' : '⏰'}</span>
-                            <span className="truncate font-medium">{task.title}</span>
-                            <span className="shrink-0 text-[#5c5c5c]">{describeBackgroundSchedule(task)}</span>
-                          </p>
-                          <p className="truncate text-[#5c5c5c]">
-                            {task.status === 'paused' ? 'на паузе' : `следующий запуск ${formatRelative(task.nextRunAt)}`}
-                            {' · '}выполнено {task.runCount}
+                        {/* Wraps the buttons onto their own line before squeezing the text below ~12rem. */}
+                        <div
+                          className="line-clamp-4 min-w-[12rem] flex-1 break-words"
+                          title={[
+                            task.title,
+                            describeBackgroundSchedule(task),
+                            status,
+                            task.lastResult,
+                            task.lastError,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        >
+                          <span
+                            className={`mr-1.5 inline-block h-2 w-2 rounded-full ${
+                              task.status === 'paused' ? 'bg-amber-400' : task.lastError ? 'bg-red-500' : 'bg-green-500'
+                            }`}
+                          />
+                          <span className="mr-1">{task.kind === 'weather_watch' ? '🌦' : '⏰'}</span>
+                          <span className="font-medium">{task.title}</span>
+                          <span className="text-[#5c5c5c]"> · {describeBackgroundSchedule(task)}</span>
+                          <br />
+                          <span className="text-[#5c5c5c]">
+                            {status} · выполнено {task.runCount}
                             {task.lastResult && <> · {task.lastResult}</>}
-                            {task.lastError && <span className="text-red-600"> · {task.lastError}</span>}
-                          </p>
+                          </span>
+                          {task.lastError && <span className="text-red-600"> · {task.lastError}</span>}
                         </div>
                         <div className="flex shrink-0 gap-2">
                           {task.kind === 'weather_watch' && (
