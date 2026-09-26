@@ -134,6 +134,13 @@ export class BackgroundService implements OnApplicationBootstrap, OnModuleDestro
         this.store.cursors[cursorKey] = Math.max(this.store.cursors[cursorKey] ?? 0, Number(e.seq) || 0);
         changed = true;
         if (typeof e.ownerId !== 'string') continue;
+        // The per-server cursor alone can't stop a re-delivery: re-registering
+        // the same scheduler under a new id or URL (Day 20 split it out of
+        // /mcp) starts a fresh cursor at 0. The event's own identity can.
+        const inboxSoFar = this.store.inbox[e.ownerId] ?? [];
+        if (inboxSoFar.some((d) => d.taskId === String(e.taskId) && d.type === String(e.type) && d.createdAt === String(e.createdAt))) {
+          continue;
+        }
         const event: BackgroundEvent = {
           id: this.store.nextId++,
           serverId: server.id,
