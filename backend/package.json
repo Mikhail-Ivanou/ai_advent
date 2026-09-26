@@ -11,7 +11,8 @@
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "test": "jest",
     "ask": "ts-node -r tsconfig-paths/register src/llm/ask-cli.ts",
-    "reasoning-demo": "ts-node -r tsconfig-paths/register src/llm/reasoning-demo-cli.ts"
+    "reasoning-demo": "ts-node -r tsconfig-paths/register src/llm/reasoning-demo-cli.ts",
+    "orchestration-check": "ts-node -r tsconfig-paths/register src/llm/orchestration-check-cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",

@@ -25,6 +25,8 @@ export interface LlmToolset {
 }
 
 export interface ToolCallLog {
+  /** Model <-> tool round this call was made in (1-based); calls sharing a round were requested together. */
+  round: number;
   name: string;
   server?: string;
   tool?: string;
@@ -32,6 +34,8 @@ export interface ToolCallLog {
   result: string;
   isError: boolean;
   durationMs: number;
+  /** Identical to an earlier call in this answer — not executed again, the earlier result was returned. */
+  repeated?: boolean;
 }
 
 export interface AskOptions {
@@ -90,8 +94,10 @@ export interface LlmResult {
 
 // Upper bound on model <-> tool round trips per answer, so a model that keeps
 // calling tools can't loop forever; the last round is sent with tool_choice
-// "none" to force a final text answer.
-const MAX_TOOL_ROUNDS = 5;
+// "none" to force a final text answer. Long multi-server flows (Day 20) need
+// room: search -> summarize -> save plus weather, currency and a reminder is
+// already 6+ sequential steps.
+const MAX_TOOL_ROUNDS = Math.max(2, Number(process.env.LLM_MAX_TOOL_ROUNDS) || 12);
 
 /**
  * BYN price per 1M tokens for each model this account has access to
@@ -143,6 +149,11 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
   if (tools) {
     instructions.push(
       'You have tools that return real, up-to-date data. When the question needs such data (e.g. the weather), call the matching tool instead of guessing, then answer using what it returned. If a tool returns an error, tell the user plainly what went wrong.',
+    );
+    // Day 20: tools come from several MCP servers — nudge the model to plan
+    // the whole flow, fan out what's independent, and chain what isn't.
+    instructions.push(
+      'Tools come from several MCP servers (the server is named at the start of each tool description). For a request with several parts: first work out which tool serves each part, then call tools that do not depend on each other together in the same turn, and call dependent ones in order — when a tool returns an id (doc_id, summary_id, task id), pass exactly that id to the next tool instead of retyping its content. Do not call tools the request does not need. In the final answer, cover every part of the request.',
     );
     // Scheduling tools take relative delays; the model needs "now" to turn
     // "remind me at 18:00" into one.
@@ -241,6 +252,10 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
 
   const requests: LlmRequestLog[] = [];
   const toolCalls: ToolCallLog[] = [];
+  // Same tool + same arguments within one answer is never executed twice: a
+  // model stuck in a loop would otherwise repeat side effects (e.g. create the
+  // same reminder on every round) until the round limit.
+  const executed = new Map<string, LlmToolExecution>();
   let usage: LlmUsage | undefined;
   let data: any;
 
@@ -269,13 +284,27 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
       let args: Record<string, unknown> = {};
       let execution: LlmToolExecution;
       const started = Date.now();
+      let repeated = false;
       try {
         args = call.function?.arguments ? JSON.parse(call.function.arguments) : {};
-        execution = await tools!.execute(name, args);
+        const key = `${name} ${JSON.stringify(args)}`;
+        const previous = executed.get(key);
+        if (previous) {
+          repeated = true;
+          execution = {
+            ...previous,
+            content: `This exact call (same tool, same arguments) was already made in this answer and was not executed again — calling it again will not change the result. Its result was:\n${previous.content}`,
+          };
+        } else {
+          execution = await tools!.execute(name, args);
+          executed.set(key, execution);
+        }
       } catch (error) {
         execution = { content: `Tool call failed: ${(error as Error).message}`, isError: true };
       }
       toolCalls.push({
+        round,
+        ...(repeated ? { repeated } : {}),
         name,
         server: execution.source?.server,
         tool: execution.source?.tool,

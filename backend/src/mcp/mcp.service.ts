@@ -15,6 +15,8 @@ import * as path from 'path';
 import { McpConnectionState, McpServer, McpServerInput, McpServerView, McpTool } from './mcp.types';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'mcp-servers.json');
+/** Per tool call — a hung server fails that one call, not the whole agent turn. */
+const TOOL_CALL_TIMEOUT_MS = Number(process.env.MCP_TOOL_TIMEOUT_MS ?? 60_000);
 
 type ActiveTransport = NonNullable<McpConnectionState['activeTransport']>;
 
@@ -197,7 +199,9 @@ export class McpService implements OnApplicationBootstrap, OnModuleDestroy {
     const client = this.clients.get(serverId);
     if (!client) return { content: 'MCP-сервер отключён', isError: true };
     try {
-      const result = await client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) });
+      const result = await client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, undefined, {
+        timeout: TOOL_CALL_TIMEOUT_MS,
+      });
       const parts = (Array.isArray(result.content) ? result.content : []).map((part) =>
         part.type === 'text' ? part.text : `[${part.type}]`,
       );

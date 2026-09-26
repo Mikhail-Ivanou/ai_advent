@@ -5,7 +5,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import * as path from 'path';
 import { FILES_DIR, Pipeline, signFilename } from './pipeline.js';
 import { Scheduler } from './scheduler.js';
-import { createWeatherServer } from './server.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createResearchServer, createSchedulerServer, createWeatherServer } from './server.js';
 
 const PORT = Number(process.env.PORT ?? 3002);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -40,10 +41,26 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// One endpoint per MCP server (Day 20) — the app registers each separately.
+const SERVERS: Record<string, () => McpServer> = {
+  weather: () => createWeatherServer(),
+  scheduler: () => createSchedulerServer(scheduler),
+  research: () => createResearchServer(pipeline),
+};
+
 // Stateless Streamable HTTP: every POST gets a fresh server + transport, so
 // there's no session state to lose on restart and it scales horizontally.
-app.post('/mcp', requireToken, async (req, res) => {
-  const server = createWeatherServer(scheduler, pipeline);
+app.post('/mcp/:server', requireToken, async (req, res) => {
+  const factory = SERVERS[String(req.params.server)];
+  if (!factory) {
+    res.status(404).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: `Unknown MCP server; available: ${Object.keys(SERVERS).join(', ')}` },
+      id: null,
+    });
+    return;
+  }
+  const server = factory();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => {
     void transport.close();
@@ -79,7 +96,7 @@ app.get('/files/:name', requireFileAccess, (req, res) => {
 });
 
 // No sessions means no server-initiated stream (GET) and nothing to end (DELETE).
-app.all('/mcp', (_req, res) => {
+app.all('/mcp/:server', (_req, res) => {
   res.status(405).set('Allow', 'POST').json({
     jsonrpc: '2.0',
     error: { code: -32000, message: 'Method not allowed' },
@@ -88,5 +105,6 @@ app.all('/mcp', (_req, res) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`Weather MCP server listening on http://${HOST}:${PORT}/mcp${AUTH_TOKEN ? ' (bearer auth on)' : ''}`);
+  const endpoints = Object.keys(SERVERS).map((name) => `/mcp/${name}`).join(', ');
+  console.log(`MCP servers listening on http://${HOST}:${PORT}: ${endpoints}${AUTH_TOKEN ? ' (bearer auth on)' : ''}`);
 });

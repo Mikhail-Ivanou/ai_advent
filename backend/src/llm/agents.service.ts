@@ -170,24 +170,33 @@ export class AgentsService implements OnModuleInit {
   }
 
   /**
-   * Exposes every tool of every connected MCP server to the model (Day 17).
+   * Exposes every tool of every connected MCP server to the model (Day 17)
+   * and routes each call back to the server it came from (Day 20).
    * OpenAI function names allow only [a-zA-Z0-9_-]{1,64} and must be unique
-   * across servers, so names are sanitized and a clash is prefixed with the
-   * server's name; the map resolves each back to its server + real tool name.
+   * across servers: names are sanitized, and a name offered by more than one
+   * server is prefixed with the server's name for *all* of them — prefixing
+   * only the later ones would leave the model guessing which server the bare
+   * name means. Descriptions are tagged with the server name so the model can
+   * see which tools belong together.
    */
   private buildMcpToolset(chatId: string): LlmToolset | undefined {
     const connected = this.mcpService.listConnectedTools();
     if (connected.length === 0) return undefined;
 
     const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const offeredBy = new Map<string, number>();
+    for (const { tool } of connected) offeredBy.set(sanitize(tool.name), (offeredBy.get(sanitize(tool.name)) ?? 0) + 1);
+
     const routes = new Map<string, { serverId: string; serverName: string; toolName: string }>();
     const tools: LlmTool[] = [];
     for (const { serverId, serverName, tool } of connected) {
-      let name = sanitize(tool.name).slice(0, 64);
-      if (routes.has(name)) name = `${sanitize(serverName)}__${sanitize(tool.name)}`.slice(0, 64);
-      for (let n = 2; routes.has(name); n++) name = `${sanitize(tool.name).slice(0, 60)}_${n}`;
+      const base = sanitize(tool.name);
+      let name = ((offeredBy.get(base) ?? 0) > 1 ? `${sanitize(serverName)}__${base}` : base).slice(0, 64);
+      // Still taken (two servers with the same name, or truncation) — number it.
+      for (let n = 2; routes.has(name); n++) name = `${name.slice(0, 60)}_${n}`;
       routes.set(name, { serverId, serverName, toolName: tool.name });
-      tools.push({ name, description: tool.description ?? tool.title, parameters: tool.inputSchema });
+      const description = tool.description ?? tool.title ?? '';
+      tools.push({ name, description: `[MCP-сервер «${serverName}»] ${description}`.trim(), parameters: tool.inputSchema });
     }
 
     return {

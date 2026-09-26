@@ -1,12 +1,20 @@
 # mcp-weather
 
-MCP server with one tool, `get_weather_forecast`: current weather and a
-forecast for a city, on top of [Open-Meteo](https://open-meteo.com). Open-Meteo
-is free and needs no API key, so the only secret is the server's own bearer
-token (`MCP_AUTH_TOKEN`).
+One process that exposes **three separate MCP servers**, each at its own
+address. The app registers each one as its own server, so the agent has to
+pick a tool across servers and route each call to the right one.
 
-Transport: Streamable HTTP, stateless, at `POST /mcp`. `GET /health` is a
-plain health check.
+| Server | Address | Tools |
+|---|---|---|
+| `advent-weather` | `POST /mcp/weather` | `get_weather_forecast` |
+| `advent-scheduler` | `POST /mcp/scheduler` | `schedule_task`, `list_scheduled_tasks`, `get_task_summary`, `set_task_status`, `get_task_events` |
+| `advent-research` | `POST /mcp/research` | `search`, `summarize`, `save_to_file`, `run_pipeline` |
+
+Transport: Streamable HTTP, stateless. All three share one bearer token
+(`MCP_AUTH_TOKEN`); it's the only secret. The weather comes from
+[Open-Meteo](https://open-meteo.com), which is free and needs no key.
+`GET /health` is a plain health check, and `GET /files/<name>` downloads the
+files from `save_to_file`.
 
 ## Tool
 
@@ -85,11 +93,12 @@ source's id and sha256, so the chain can be checked end to end.
 
 ```bash
 cp mcp-weather/.env.example mcp-weather/.env   # MCP_AUTH_TOKEN can stay empty locally
-npm run dev:mcp-weather                         # http://localhost:3002/mcp
+npm run dev:mcp-weather                         # http://localhost:3002/mcp/{weather,scheduler,research}
 ```
 
-In the app: **MCP** (bottom left) → URL `http://localhost:3002/mcp`,
-protocol "Авто". If a token is set, add the header
+In the app: **MCP** (bottom left), then add three servers:
+`http://localhost:3002/mcp/weather`, `…/mcp/scheduler` and `…/mcp/research`,
+with protocol "Авто". If a token is set, give each one the header
 `Authorization: Bearer <token>`.
 
 ## Deploy to h3llo.cloud
@@ -117,7 +126,8 @@ service, so the server runs in Docker on a VM.
    sed -i "s|^OPEN_METEO_FORECAST_URL=.*|OPEN_METEO_FORECAST_URL=https://previous-runs-api.open-meteo.com/v1/forecast|" .env
    docker compose up -d
    ```
-4. Connect it in the app: URL `http://<vm-ip>:3002/mcp` and the header
+4. Connect it in the app as three servers: `http://<vm-ip>:3002/mcp/weather`,
+   `…/mcp/scheduler` and `…/mcp/research`, each with the header
    `Authorization: Bearer <token from .env>`.
 
 ### With HTTPS (recommended)
@@ -130,8 +140,8 @@ record points to the VM:
 docker compose --profile tls up -d --build
 ```
 
-Caddy gets a Let's Encrypt certificate on its own. The URL in the app is then
-`https://weather.example.com/mcp`.
+Caddy gets a Let's Encrypt certificate on its own. The URLs in the app are then
+`https://weather.example.com/mcp/weather` and so on.
 
 ### Update
 

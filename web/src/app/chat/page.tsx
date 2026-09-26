@@ -249,6 +249,8 @@ type InvariantCheckInfo = {
 };
 
 type ToolCallLog = {
+  /** Model <-> tool round (Day 20); calls sharing a round were requested together. Absent on messages from before. */
+  round?: number;
   name: string;
   server?: string;
   tool?: string;
@@ -256,6 +258,8 @@ type ToolCallLog = {
   result: string;
   isError: boolean;
   durationMs: number;
+  /** Same tool + arguments as an earlier call in this answer — not executed again. */
+  repeated?: boolean;
 };
 
 // Background tasks (Day 18): scheduled on the MCP server (24/7), created by
@@ -1726,7 +1730,18 @@ export default function ChatPage() {
               </p>
               {message.meta?.toolCalls && message.meta.toolCalls.length > 0 && (
                 <div className="mt-1 flex flex-col gap-1">
-                  {message.meta.toolCalls.map((call, callIndex) => (
+                  {(() => {
+                    const calls = message.meta!.toolCalls!;
+                    const rounds = new Set(calls.map((c) => c.round ?? 1)).size;
+                    const servers = new Set(calls.map((c) => c.server).filter(Boolean)).size;
+                    return (
+                      <p className="text-xs text-[#5c5c5c]">
+                        Флоу: {calls.length} вызов{calls.length === 1 ? '' : calls.length < 5 ? 'а' : 'ов'} · {rounds}{' '}
+                        раунд{rounds === 1 ? '' : rounds < 5 ? 'а' : 'ов'} · MCP-серверов: {servers}
+                      </p>
+                    );
+                  })()}
+                  {message.meta.toolCalls.map((call, callIndex, calls) => (
                     <details
                       key={callIndex}
                       className={`rounded-md border px-2 py-1 text-xs ${
@@ -1734,8 +1749,15 @@ export default function ChatPage() {
                       }`}
                     >
                       <summary className="cursor-pointer text-[#5c5c5c]">
-                        MCP: <span className="font-mono text-pine">{call.tool ?? call.name}</span>
-                        {call.server && <> @ {call.server}</>} · {(call.durationMs / 1000).toFixed(1)}с
+                        <span className="font-mono">
+                          {callIndex + 1}.{call.round !== undefined && <> р{call.round}</>}
+                          {/* ∥ — requested in the same round as another call, i.e. in parallel */}
+                          {call.round !== undefined && calls.filter((c) => c.round === call.round).length > 1 && ' ∥'}
+                        </span>{' '}
+                        {call.server ?? 'MCP'} → <span className="font-mono text-pine">{call.tool ?? call.name}</span>
+                        {' · '}
+                        {(call.durationMs / 1000).toFixed(1)}с
+                        {call.repeated && <span title="Повтор такого же вызова — не выполнялся заново"> · ↺ повтор</span>}
                         {call.isError && <span className="text-red-600"> · ошибка</span>}
                         <span className="ml-1 font-mono">{JSON.stringify(call.arguments)}</span>
                       </summary>

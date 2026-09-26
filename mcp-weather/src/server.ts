@@ -128,9 +128,13 @@ const outputSchema = {
   notes: z.array(z.string()),
 };
 
-/** One server instance per request (the HTTP transport runs stateless), so this must stay cheap. */
-export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): McpServer {
-  const server = new McpServer({ name: 'advent-weather', version: '0.3.0' });
+// Three separate MCP servers (Day 20), one per responsibility, each at its own
+// endpoint (see index.ts) and registered in the app as its own server — so
+// the agent has to pick and route across servers, not within one.
+// One instance per request (the HTTP transport runs stateless), so these must stay cheap.
+
+export function createWeatherServer(): McpServer {
+  const server = new McpServer({ name: 'advent-weather', version: '0.4.0' });
 
   server.registerTool(
     'get_weather_forecast',
@@ -187,6 +191,12 @@ export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): M
       }
     },
   );
+
+  return server;
+}
+
+export function createSchedulerServer(scheduler: Scheduler): McpServer {
+  const server = new McpServer({ name: 'advent-scheduler', version: '0.4.0' });
 
   server.registerTool(
     'schedule_task',
@@ -342,7 +352,12 @@ export function createWeatherServer(scheduler: Scheduler, pipeline: Pipeline): M
     },
   );
 
-  // --- Day 19: search -> summarize -> save_to_file, chained by artifact id ---
+  return server;
+}
+
+/** Day 19: search -> summarize -> save_to_file, chained by artifact id. */
+export function createResearchServer(pipeline: Pipeline): McpServer {
+  const server = new McpServer({ name: 'advent-research', version: '0.4.0' });
 
   const sourcesSchema = z
     .array(z.enum(['wikipedia', 'habr', 'hackernews']))
