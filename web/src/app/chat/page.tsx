@@ -321,6 +321,13 @@ const CONTEXT_STRATEGIES: { value: ContextStrategy; label: string }[] = [
   { value: 'branching', label: 'Branching (ветки)' },
 ];
 
+const REASONING_MODE_LABELS: Record<ReasoningMode, string> = {
+  direct: 'Direct answer',
+  'step-by-step': 'Step by step',
+  'self-prompt': 'Self-authored prompt',
+  'expert-panel': 'Expert panel',
+};
+
 const MODELS = [
   { value: 'deepseek-v4-flash', label: 'Слабая (deepseek-v4-flash)' },
   { value: 'deepseek-chat-v3', label: 'Средняя (deepseek-chat-v3)' },
@@ -408,6 +415,9 @@ export default function ChatPage() {
   // panels above it, so it shouldn't eat the sidebar's vertical space until
   // someone actually wants to look at it.
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  // Chat settings are tuned once and then left alone — collapsed by default so
+  // the conversation gets the vertical space.
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
 
   // Task state (Day 13), per chat id — same fetch-once-then-sync pattern as
   // working memory above.
@@ -1264,128 +1274,151 @@ export default function ChatPage() {
           <h1 className="truncate text-2xl font-medium">{chatTitle(activeChat)}</h1>
         </div>
 
-        <div className="shrink-0 flex flex-wrap gap-4 rounded-lg border border-black/10 bg-white p-4 text-sm">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Reasoning mode</span>
-            <select
-              value={settings.reasoningMode}
-              onChange={(event) =>
-                updateSettings(activeChat.id, { reasoningMode: event.target.value as ReasoningMode })
-              }
-              className="rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            >
-              <option value="direct">Direct answer</option>
-              <option value="step-by-step">Step by step</option>
-              <option value="self-prompt">Self-authored prompt</option>
-              <option value="expert-panel">Expert panel</option>
-            </select>
-          </label>
+        <section className="shrink-0 rounded-lg border border-black/10 bg-white text-sm">
+          <button
+            type="button"
+            onClick={() => setSettingsPanelOpen((open) => !open)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left"
+          >
+            <span className="flex min-w-0 items-baseline gap-2">
+              <span className="shrink-0 font-medium text-pine">Настройки чата</span>
+              {!settingsPanelOpen && (
+                <span className="truncate text-xs text-[#5c5c5c]">
+                  {settings.model} · {REASONING_MODE_LABELS[settings.reasoningMode]} ·{' '}
+                  {CONTEXT_STRATEGIES.find((c) => c.value === settings.contextStrategy)?.label}
+                  {settings.temperature && settings.temperature !== '1' && <> · t={settings.temperature}</>}
+                  {settings.format === 'json' && <> · JSON</>}
+                </span>
+              )}
+            </span>
+            <span className="shrink-0 text-xs text-[#5c5c5c]">{settingsPanelOpen ? '▾ свернуть' : '▸ развернуть'}</span>
+          </button>
+          {settingsPanelOpen && (
+            <div className="flex flex-wrap gap-4 border-t border-black/10 p-4">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Reasoning mode</span>
+                <select
+                  value={settings.reasoningMode}
+                  onChange={(event) =>
+                    updateSettings(activeChat.id, { reasoningMode: event.target.value as ReasoningMode })
+                  }
+                  className="rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                >
+                  {(Object.keys(REASONING_MODE_LABELS) as ReasoningMode[]).map((mode) => (
+                    <option key={mode} value={mode}>
+                      {REASONING_MODE_LABELS[mode]}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Model</span>
-            <select
-              value={settings.model}
-              onChange={(event) => updateSettings(activeChat.id, { model: event.target.value })}
-              className="rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            >
-              {MODELS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Model</span>
+                <select
+                  value={settings.model}
+                  onChange={(event) => updateSettings(activeChat.id, { model: event.target.value })}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                >
+                  {MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Temperature</span>
-            <select
-              value={settings.temperature}
-              onChange={(event) => updateSettings(activeChat.id, { temperature: event.target.value })}
-              className="rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            >
-              <option value="0">0</option>
-              <option value="0.7">0.7</option>
-              <option value="1">1 (default)</option>
-              <option value="1.2">1.2</option>
-              <option value="1.7">1.7</option>
-            </select>
-          </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Temperature</span>
+                <select
+                  value={settings.temperature}
+                  onChange={(event) => updateSettings(activeChat.id, { temperature: event.target.value })}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                >
+                  <option value="0">0</option>
+                  <option value="0.7">0.7</option>
+                  <option value="1">1 (default)</option>
+                  <option value="1.2">1.2</option>
+                  <option value="1.7">1.7</option>
+                </select>
+              </label>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Response format</span>
-            <select
-              value={settings.format}
-              onChange={(event) => updateSettings(activeChat.id, { format: event.target.value as Format })}
-              className="rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            >
-              <option value="text">Plain text</option>
-              <option value="json">JSON</option>
-            </select>
-          </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Response format</span>
+                <select
+                  value={settings.format}
+                  onChange={(event) => updateSettings(activeChat.id, { format: event.target.value as Format })}
+                  className="rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                >
+                  <option value="text">Plain text</option>
+                  <option value="json">JSON</option>
+                </select>
+              </label>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Max output tokens</span>
-            <input
-              type="number"
-              min={1}
-              value={settings.maxOutputTokens}
-              onChange={(event) => updateSettings(activeChat.id, { maxOutputTokens: event.target.value })}
-              placeholder="No limit"
-              className="w-32 rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            />
-          </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Max output tokens</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={settings.maxOutputTokens}
+                  onChange={(event) => updateSettings(activeChat.id, { maxOutputTokens: event.target.value })}
+                  placeholder="No limit"
+                  className="w-32 rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                />
+              </label>
 
-          <label className="flex flex-1 min-w-[12rem] flex-col gap-1">
-            <span className="text-xs text-pine">Stop sequence / instruction</span>
-            <input
-              type="text"
-              value={settings.stopSequence}
-              onChange={(event) => updateSettings(activeChat.id, { stopSequence: event.target.value })}
-              placeholder='e.g. "###" or "stop after the summary"'
-              className="rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            />
-          </label>
+              <label className="flex flex-1 min-w-[12rem] flex-col gap-1">
+                <span className="text-xs text-pine">Stop sequence / instruction</span>
+                <input
+                  type="text"
+                  value={settings.stopSequence}
+                  onChange={(event) => updateSettings(activeChat.id, { stopSequence: event.target.value })}
+                  placeholder='e.g. "###" or "stop after the summary"'
+                  className="rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                />
+              </label>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Стратегия контекста</span>
-            <select
-              value={settings.contextStrategy}
-              onChange={(event) =>
-                updateSettings(activeChat.id, { contextStrategy: event.target.value as ContextStrategy })
-              }
-              className="rounded-md border border-black/10 px-2 py-1"
-              disabled={isActiveLoading}
-            >
-              {CONTEXT_STRATEGIES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Стратегия контекста</span>
+                <select
+                  value={settings.contextStrategy}
+                  onChange={(event) =>
+                    updateSettings(activeChat.id, { contextStrategy: event.target.value as ContextStrategy })
+                  }
+                  className="rounded-md border border-black/10 px-2 py-1"
+                  disabled={isActiveLoading}
+                >
+                  {CONTEXT_STRATEGIES.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-pine">Хранить как есть, N сообщ.</span>
-            <input
-              type="number"
-              min={0}
-              value={settings.keepLastN}
-              onChange={(event) => updateSettings(activeChat.id, { keepLastN: event.target.value })}
-              className="w-32 rounded-md border border-black/10 px-2 py-1"
-              disabled={
-                isActiveLoading ||
-                settings.contextStrategy === 'none' ||
-                settings.contextStrategy === 'branching'
-              }
-            />
-          </label>
-        </div>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-pine">Хранить как есть, N сообщ.</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={settings.keepLastN}
+                  onChange={(event) => updateSettings(activeChat.id, { keepLastN: event.target.value })}
+                  className="w-32 rounded-md border border-black/10 px-2 py-1"
+                  disabled={
+                    isActiveLoading ||
+                    settings.contextStrategy === 'none' ||
+                    settings.contextStrategy === 'branching'
+                  }
+                />
+              </label>
+            </div>
+          )}
+        </section>
 
         {isBranching && (
           <div className="shrink-0 flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white p-3 text-sm">
