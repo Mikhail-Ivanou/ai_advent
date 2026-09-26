@@ -1,0 +1,3 @@
+{$DOMAIN} {
+	reverse_proxy weather:3002
+}

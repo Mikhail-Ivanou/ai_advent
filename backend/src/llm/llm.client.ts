@@ -3,6 +3,37 @@ export interface ChatMessage {
   content: string;
 }
 
+/** A function the model may call, in OpenAI `tools` shape minus the wrapper. */
+export interface LlmTool {
+  name: string;
+  description?: string;
+  /** JSON Schema for the arguments object. */
+  parameters: Record<string, unknown>;
+}
+
+export interface LlmToolExecution {
+  content: string;
+  isError: boolean;
+  /** Where the call actually went — for the log, since `name` may have been disambiguated. */
+  source?: { server: string; tool: string };
+}
+
+/** Tools offered to the model for one answer, plus how to run them (Day 17: backed by connected MCP servers). */
+export interface LlmToolset {
+  tools: LlmTool[];
+  execute(name: string, args: Record<string, unknown>): Promise<LlmToolExecution>;
+}
+
+export interface ToolCallLog {
+  name: string;
+  server?: string;
+  tool?: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  isError: boolean;
+  durationMs: number;
+}
+
 export interface AskOptions {
   /** Desired response format: freeform prose, or a single JSON object. */
   format?: 'text' | 'json';
@@ -30,6 +61,8 @@ export interface AskOptions {
   taskState?: string;
   /** Hard invariants — architecture/decisions/stack/business rules the assistant must never propose violating (see Day 14). Formatted text, or undefined if none are active. */
   invariants?: string;
+  /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
+  tools?: LlmToolset;
 }
 
 export interface LlmUsage {
@@ -51,7 +84,14 @@ export interface LlmResult {
   usage?: LlmUsage;
   /** The exact request(s) sent to the API — one entry per underlying call this made. */
   requests: LlmRequestLog[];
+  /** Every tool call made while producing `content`, in order. */
+  toolCalls?: ToolCallLog[];
 }
+
+// Upper bound on model <-> tool round trips per answer, so a model that keeps
+// calling tools can't loop forever; the last round is sent with tool_choice
+// "none" to force a final text answer.
+const MAX_TOOL_ROUNDS = 5;
 
 /**
  * BYN price per 1M tokens for each model this account has access to
@@ -99,8 +139,14 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
   if (options.stopSequence) {
     instructions.push(`Stop writing immediately after you output: "${options.stopSequence}"`);
   }
+  const tools = options.format !== 'json' && options.tools?.tools.length ? options.tools : undefined;
+  if (tools) {
+    instructions.push(
+      'You have tools that return real, up-to-date data. When the question needs such data (e.g. the weather), call the matching tool instead of guessing, then answer using what it returned. If a tool returns an error, tell the user plainly what went wrong.',
+    );
+  }
 
-  const messages = [
+  const messages: Record<string, unknown>[] = [
     { role: 'system', content: instructions.join(' ') },
     // Placed before everything else, including personalization: these are
     // hard constraints on the solution space, not a preference — nothing
@@ -183,32 +229,62 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     requestBody.temperature = options.temperature;
   }
 
-  // Captured after every conditional field above, so this is byte-for-byte
-  // what JSON.stringify(requestBody) below actually sends — not a parallel
-  // reconstruction that could drift from the real body.
-  const requestLog: LlmRequestLog = { label, body: requestBody };
+  if (tools) {
+    requestBody.tools = tools.tools.map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+  }
 
-  let response: Response;
-  try {
-    response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
+  const requests: LlmRequestLog[] = [];
+  const toolCalls: ToolCallLog[] = [];
+  let usage: LlmUsage | undefined;
+  let data: any;
+
+  for (let round = 1; ; round++) {
+    if (tools && round === MAX_TOOL_ROUNDS) requestBody.tool_choice = 'none';
+    // Snapshot per round: `messages` keeps growing with tool results, and the
+    // log must show exactly what each individual call sent.
+    const body = { ...requestBody, messages: [...messages] };
+    requests.push({ label: round === 1 ? label : `${label}:tool-round-${round}`, body });
+    data = await postChatCompletion(apiUrl, apiKey, body);
+    usage = sumUsage(usage, parseUsage(data.usage));
+
+    const message = data.choices?.[0]?.message;
+    const calls: any[] = tools && Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    if (calls.length === 0 || round === MAX_TOOL_ROUNDS) break;
+
+    messages.push({
+      role: 'assistant',
+      content: message.content ?? null,
+      tool_calls: calls,
+      // Reasoning models (DeepSeek) reject a tool round that drops their own reasoning.
+      ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
     });
-  } catch (error) {
-    const errorCause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
-    const cause = errorCause instanceof Error ? `: ${errorCause.message}` : '';
-    throw new Error(`Could not reach LLM API at ${apiUrl}${cause}`);
+    for (const call of calls) {
+      const name: string = call.function?.name ?? '';
+      let args: Record<string, unknown> = {};
+      let execution: LlmToolExecution;
+      const started = Date.now();
+      try {
+        args = call.function?.arguments ? JSON.parse(call.function.arguments) : {};
+        execution = await tools!.execute(name, args);
+      } catch (error) {
+        execution = { content: `Tool call failed: ${(error as Error).message}`, isError: true };
+      }
+      toolCalls.push({
+        name,
+        server: execution.source?.server,
+        tool: execution.source?.tool,
+        arguments: args,
+        result: execution.content,
+        isError: execution.isError,
+        durationMs: Date.now() - started,
+      });
+      messages.push({ role: 'tool', tool_call_id: call.id, content: execution.content });
+    }
   }
 
-  if (!response.ok) {
-    throw new Error(`LLM request failed: ${response.status} ${await response.text()}`);
-  }
-
-  const data = await response.json();
   let content: string = data.choices?.[0]?.message?.content ?? '';
 
   // Hard stop: truncate right after the stop sequence ourselves, since not every
@@ -220,15 +296,46 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     }
   }
 
-  const usage: LlmUsage | undefined = data.usage
+  return {
+    content,
+    model: data.model ?? model,
+    usage,
+    requests,
+    ...(toolCalls.length ? { toolCalls } : {}),
+  };
+}
+
+async function postChatCompletion(apiUrl: string, apiKey: string, body: Record<string, unknown>): Promise<any> {
+  let response: Response;
+  try {
+    response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const errorCause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
+    const cause = errorCause instanceof Error ? `: ${errorCause.message}` : '';
+    throw new Error(`Could not reach LLM API at ${apiUrl}${cause}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`LLM request failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
+function parseUsage(raw: any): LlmUsage | undefined {
+  return raw
     ? {
-        promptTokens: data.usage.prompt_tokens ?? 0,
-        completionTokens: data.usage.completion_tokens ?? 0,
-        totalTokens: data.usage.total_tokens ?? 0,
+        promptTokens: raw.prompt_tokens ?? 0,
+        completionTokens: raw.completion_tokens ?? 0,
+        totalTokens: raw.total_tokens ?? 0,
       }
     : undefined;
-
-  return { content, model: data.model ?? model, usage, requests: [requestLog] };
 }
 
 function sumUsage(a?: LlmUsage, b?: LlmUsage): LlmUsage | undefined {
@@ -276,6 +383,7 @@ export async function callLlmWithReasoning(
         model: answer.model,
         usage: sumUsage(generated.usage, answer.usage),
         requests: [...generated.requests, ...answer.requests],
+        toolCalls: answer.toolCalls,
       };
     }
 
@@ -307,6 +415,7 @@ export async function callLlmWithReasoning(
         model: results[0]?.model ?? options.model ?? 'unknown',
         usage: results.reduce<LlmUsage | undefined>((acc, r) => sumUsage(acc, r.usage), undefined),
         requests: results.flatMap((r) => r.requests),
+        toolCalls: results.flatMap((r) => r.toolCalls ?? []),
       };
     }
 

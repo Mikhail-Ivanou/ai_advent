@@ -7,8 +7,9 @@ backend and a Next.js frontend, wired together for local development.
 
 ```
 advent/
-├── backend/   NestJS API (TypeScript)
-└── web/       Next.js frontend (TypeScript, App Router, Tailwind)
+├── backend/      NestJS API (TypeScript)
+├── web/          Next.js frontend (TypeScript, App Router, Tailwind)
+└── mcp-weather/  MCP server with a weather tool (see mcp-weather/README.md)
 ```
 
 ## Getting started
@@ -24,6 +25,7 @@ Run both apps in separate terminals:
 ```bash
 npm run dev:backend   # http://localhost:3001
 npm run dev:web        # http://localhost:3000
+npm run dev:mcp-weather  # http://localhost:3002/mcp — optional, weather MCP tool
 ```
 
 The web app proxies `/api/backend/*` to the backend (see `web/next.config.mjs`),
@@ -36,6 +38,7 @@ Each package has a `.env.example`. Copy to `.env` and adjust as needed:
 ```bash
 cp backend/.env.example backend/.env
 cp web/.env.example web/.env.local
+cp mcp-weather/.env.example mcp-weather/.env
 ```
 
 ## Adding a day's challenge

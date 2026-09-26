@@ -4,12 +4,14 @@
   "version": "0.0.1",
   "workspaces": [
     "backend",
-    "web"
+    "web",
+    "mcp-weather"
   ],
   "scripts": {
     "dev:backend": "npm run start:dev --workspace=backend",
     "dev:web": "npm run dev --workspace=web",
-    "build": "npm run build --workspace=backend && npm run build --workspace=web",
-    "lint": "npm run lint --workspace=backend && npm run lint --workspace=web"
+    "build": "npm run build --workspace=backend && npm run build --workspace=web && npm run build --workspace=mcp-weather",
+    "lint": "npm run lint --workspace=backend && npm run lint --workspace=web",
+    "dev:mcp-weather": "npm run dev --workspace=mcp-weather"
   }
 }

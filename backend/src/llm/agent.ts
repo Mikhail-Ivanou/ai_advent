@@ -4,6 +4,7 @@ import {
   LlmRequestLog,
   LlmUsage,
   ReasoningMode,
+  ToolCallLog,
   callLlm,
   callLlmWithReasoning,
   estimateCostByn,
@@ -105,6 +106,11 @@ export interface TaskInfo {
  * global (owned by InvariantService) and never mutated by a conversation, so
  * it's passed in fresh on every call rather than stored on the instance.
  */
+export interface McpConfig {
+  /** Offer tools from connected MCP servers to the model this turn (Day 17). Default true — a no-op while nothing is connected. */
+  useTools?: boolean;
+}
+
 export interface InvariantConfig {
   /** Inject invariants into the prompt as hard constraints this turn. Default true. */
   use?: boolean;
@@ -134,6 +140,8 @@ export interface AgentAskResult {
   invariants?: InvariantCheckInfo;
   /** Which personalization profile (if any) was applied to this turn — populated by AgentsService, since Agent itself only sees the already-formatted text (Day 12). */
   profile?: { id: string; name: string };
+  /** MCP tool calls the model made while producing `answer` (Day 17). */
+  toolCalls?: ToolCallLog[];
   /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing/task-state/invariant-check calls. */
   requests: LlmRequestLog[];
 }
@@ -558,6 +566,7 @@ export class Agent {
       memory,
       task,
       invariants: invariantInfo,
+      toolCalls: result.toolCalls,
       requests: [
         ...factsRequests,
         ...result.requests,

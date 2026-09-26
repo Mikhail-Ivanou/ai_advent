@@ -248,6 +248,16 @@ type InvariantCheckInfo = {
   update?: { usage?: Usage; costByn?: number };
 };
 
+type ToolCallLog = {
+  name: string;
+  server?: string;
+  tool?: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  isError: boolean;
+  durationMs: number;
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -262,6 +272,7 @@ type Message = {
     profile?: { id: string; name: string };
     task?: TaskInfo;
     invariants?: InvariantCheckInfo;
+    toolCalls?: ToolCallLog[];
     requests: LlmRequestLog[];
   };
 };
@@ -285,6 +296,7 @@ type ChatSettings = {
   updateTaskState: boolean;
   useInvariants: boolean;
   checkInvariants: boolean;
+  useMcpTools: boolean;
 };
 
 type Chat = {
@@ -338,6 +350,7 @@ function defaultSettings(): ChatSettings {
     updateTaskState: true,
     useInvariants: true,
     checkInvariants: true,
+    useMcpTools: true,
   };
 }
 
@@ -1083,6 +1096,9 @@ export default function ChatPage() {
             use: settings.useInvariants,
             check: settings.checkInvariants,
           },
+          mcp: {
+            useTools: settings.useMcpTools,
+          },
         }),
       });
 
@@ -1102,6 +1118,7 @@ export default function ChatPage() {
         profile?: { id: string; name: string };
         task?: TaskInfo;
         invariants?: InvariantCheckInfo;
+        toolCalls?: ToolCallLog[];
         requests: LlmRequestLog[];
       } = await response.json();
 
@@ -1122,6 +1139,7 @@ export default function ChatPage() {
               profile: data.profile,
               task: data.task,
               invariants: data.invariants,
+              toolCalls: data.toolCalls,
               requests: data.requests,
             },
           },
@@ -1421,6 +1439,28 @@ export default function ChatPage() {
               <p className="inline-block whitespace-pre-wrap rounded-lg bg-paper px-3 py-2">
                 {message.content}
               </p>
+              {message.meta?.toolCalls && message.meta.toolCalls.length > 0 && (
+                <div className="mt-1 flex flex-col gap-1">
+                  {message.meta.toolCalls.map((call, callIndex) => (
+                    <details
+                      key={callIndex}
+                      className={`rounded-md border px-2 py-1 text-xs ${
+                        call.isError ? 'border-red-200 bg-red-50' : 'border-black/10 bg-white'
+                      }`}
+                    >
+                      <summary className="cursor-pointer text-[#5c5c5c]">
+                        MCP: <span className="font-mono text-pine">{call.tool ?? call.name}</span>
+                        {call.server && <> @ {call.server}</>} · {(call.durationMs / 1000).toFixed(1)}с
+                        {call.isError && <span className="text-red-600"> · ошибка</span>}
+                        <span className="ml-1 font-mono">{JSON.stringify(call.arguments)}</span>
+                      </summary>
+                      <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] text-ink">
+                        {call.result}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              )}
               {message.meta && (
                 <>
                   <p className="mt-1 text-xs text-[#5c5c5c]">
@@ -1650,6 +1690,39 @@ export default function ChatPage() {
               </div>
             </>
           )}
+        </section>
+
+        <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-pine">MCP-инструменты</h2>
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={settings.useMcpTools}
+                onChange={(event) => updateSettings(activeChat.id, { useMcpTools: event.target.checked })}
+              />
+              использовать
+            </label>
+          </div>
+          {(() => {
+            const connected = mcpServers.filter((s) => s.status === 'connected');
+            const toolNames = connected.flatMap((s) => s.tools.map((t) => t.name));
+            return toolNames.length === 0 ? (
+              <p className="text-[#5c5c5c]">
+                Нет подключённых инструментов —{' '}
+                <button type="button" onClick={() => setMcpModalOpen(true)} className="underline hover:text-pine">
+                  подключить MCP-сервер
+                </button>
+                .
+              </p>
+            ) : (
+              <p className="text-[#5c5c5c]">
+                {settings.useMcpTools ? 'Модель может вызывать' : 'Отключены для этого чата'}: {toolNames.length} инстр. с{' '}
+                {connected.length} серв. — <span className="font-mono">{toolNames.slice(0, 4).join(', ')}</span>
+                {toolNames.length > 4 && ` и ещё ${toolNames.length - 4}`}
+              </p>
+            );
+          })()}
         </section>
 
         <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">

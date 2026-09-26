@@ -175,6 +175,34 @@ export class McpService implements OnApplicationBootstrap, OnModuleDestroy {
     return this.view(server);
   }
 
+  /** Every tool on every currently connected server — what the agent may offer the model this turn. */
+  listConnectedTools(): { serverId: string; serverName: string; tool: McpTool }[] {
+    return this.servers
+      .filter((s) => this.clients.has(s.id))
+      .flatMap((s) => (this.states.get(s.id)?.tools ?? []).map((tool) => ({ serverId: s.id, serverName: s.name, tool })));
+  }
+
+  /**
+   * Calls one tool and flattens its result to text for the model. Failures
+   * (server gone, protocol error) come back as an error result rather than a
+   * throw, so a broken tool degrades the answer instead of failing the turn.
+   */
+  async callTool(serverId: string, name: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
+    const client = this.clients.get(serverId);
+    if (!client) return { content: 'MCP-сервер отключён', isError: true };
+    try {
+      const result = await client.callTool({ name, arguments: args });
+      const parts = (Array.isArray(result.content) ? result.content : []).map((part) =>
+        part.type === 'text' ? part.text : `[${part.type}]`,
+      );
+      // Tools with only structured output still need something the model can read.
+      if (parts.length === 0 && result.structuredContent) parts.push(JSON.stringify(result.structuredContent));
+      return { content: parts.join('\n') || '(пустой ответ)', isError: result.isError === true };
+    } catch (error) {
+      return { content: describeError(error as Error), isError: true };
+    }
+  }
+
   /** Runs the MCP handshake over one transport; resolves to a live client or rejects with the transport's error. */
   private async tryConnect(server: McpServer, kind: ActiveTransport): Promise<Client> {
     const client = new Client({ name: 'advent-backend', version: '0.0.1' });

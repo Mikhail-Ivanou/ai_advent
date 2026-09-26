@@ -1,12 +1,13 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Agent, AgentAskResult, ContextConfig, InvariantConfig, MemoryConfig, TaskConfig } from './agent';
-import { AskOptions, ChatMessage, ReasoningMode } from './llm.client';
+import { Agent, AgentAskResult, ContextConfig, InvariantConfig, McpConfig, MemoryConfig, TaskConfig } from './agent';
+import { AskOptions, ChatMessage, LlmTool, LlmToolset, ReasoningMode } from './llm.client';
 import { TaskStage, TaskState } from './task-state';
 import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 import { InvariantService } from '../invariant/invariant.service';
+import { McpService } from '../mcp/mcp.service';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'agents.json');
 
@@ -73,6 +74,7 @@ export class AgentsService implements OnModuleInit {
     private readonly memoryService: MemoryService,
     private readonly profileService: ProfileService,
     private readonly invariantService: InvariantService,
+    private readonly mcpService: McpService,
   ) {}
 
   async onModuleInit() {
@@ -131,15 +133,17 @@ export class AgentsService implements OnModuleInit {
     profileId?: string,
     taskConfig?: TaskConfig,
     invariantConfig?: InvariantConfig,
+    mcpConfig?: McpConfig,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
+    const tools = (mcpConfig?.useTools ?? true) ? this.buildMcpToolset() : undefined;
     const longTermMemoryText = this.memoryService.formatForPrompt();
     const profileText = this.profileService.formatForPrompt(profileId);
     const activeInvariants = this.invariantService.listActive();
     const result = await agent.ask(
       prompt,
       reasoningMode,
-      { ...options, profile: profileText },
+      { ...options, profile: profileText, tools },
       contextConfig,
       memoryConfig,
       longTermMemoryText,
@@ -162,6 +166,38 @@ export class AgentsService implements OnModuleInit {
     }
     await this.persist();
     return result;
+  }
+
+  /**
+   * Exposes every tool of every connected MCP server to the model (Day 17).
+   * OpenAI function names allow only [a-zA-Z0-9_-]{1,64} and must be unique
+   * across servers, so names are sanitized and a clash is prefixed with the
+   * server's name; the map resolves each back to its server + real tool name.
+   */
+  private buildMcpToolset(): LlmToolset | undefined {
+    const connected = this.mcpService.listConnectedTools();
+    if (connected.length === 0) return undefined;
+
+    const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const routes = new Map<string, { serverId: string; serverName: string; toolName: string }>();
+    const tools: LlmTool[] = [];
+    for (const { serverId, serverName, tool } of connected) {
+      let name = sanitize(tool.name).slice(0, 64);
+      if (routes.has(name)) name = `${sanitize(serverName)}__${sanitize(tool.name)}`.slice(0, 64);
+      for (let n = 2; routes.has(name); n++) name = `${sanitize(tool.name).slice(0, 60)}_${n}`;
+      routes.set(name, { serverId, serverName, toolName: tool.name });
+      tools.push({ name, description: tool.description ?? tool.title, parameters: tool.inputSchema });
+    }
+
+    return {
+      tools,
+      execute: async (name, args) => {
+        const route = routes.get(name);
+        if (!route) return { content: `Unknown tool: ${name}`, isError: true };
+        const result = await this.mcpService.callTool(route.serverId, route.toolName, args);
+        return { ...result, source: { server: route.serverName, tool: route.toolName } };
+      },
+    };
   }
 
   getHistory(id: string): ChatMessage[] {
