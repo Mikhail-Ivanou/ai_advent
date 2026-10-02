@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { chunkFixed, chunkStructural, endsMidSentence } from './chunking';
 import { dot, embed, EmbeddingInfo, embeddingInfo } from './embedder';
+import { Bm25Index } from './lexical';
 import { baseName, loadDocument, loadFromUrl } from './loaders';
 import {
   CHUNKING_STRATEGIES,
@@ -20,6 +21,7 @@ import {
   RetrievalEval,
   RetrievalEvalKind,
   SearchHit,
+  SearchMode,
   StrategyStats,
 } from './rag.types';
 
@@ -81,6 +83,7 @@ export class RagService {
   private params: ChunkingParams = structuredClone(DEFAULT_CHUNKING_PARAMS);
   private queue: Promise<unknown> = Promise.resolve();
   private status: IndexingStatus = { busy: false };
+  private readonly lexicalCache = new WeakMap<IndexedChunk[], Bm25Index>();
 
   /** mtime of each index file as last read or written, to notice changes made by the CLI. */
   private readonly loadedAt = new Map<ChunkingStrategy, number>();
@@ -324,21 +327,64 @@ export class RagService {
     return top.map((h) => ({ ...h, score: round(h.score, 4) }));
   }
 
-  async search(query: string, k = 5): Promise<Record<ChunkingStrategy, SearchHit[]>> {
+  /** BM25 over an index's chunks, rebuilt whenever its chunk list is replaced. */
+  private lexical(chunks: IndexedChunk[]): Bm25Index {
+    let bm25 = this.lexicalCache.get(chunks);
+    if (!bm25) {
+      bm25 = new Bm25Index(chunks.map((c) => c.text));
+      this.lexicalCache.set(chunks, bm25);
+    }
+    return bm25;
+  }
+
+  /** Reciprocal rank fusion of the vector and BM25 rankings: score = Σ 1 / (60 + rank). */
+  private rankHybrid(strategy: ChunkingStrategy, query: string, vector: number[], k: number): SearchHit[] {
+    const index = this.indexes.get(strategy);
+    if (!index?.chunks.length) return [];
+    const chunks = index.chunks;
+    const cosine = chunks.map((c) => dot(vector, c.embedding));
+    const bm25 = this.lexical(chunks).scores(query);
+    const rankOf = (scores: number[]) => {
+      const ranks = new Array<number>(scores.length);
+      scores
+        .map((s, i) => [s, i])
+        .sort((a, b) => b[0] - a[0])
+        .forEach(([, i], r) => (ranks[i] = r));
+      return ranks;
+    };
+    const vectorRank = rankOf(cosine);
+    const lexicalRank = rankOf(bm25);
+    return chunks
+      .map((c, i) => ({
+        fused: 1 / (60 + vectorRank[i]) + (bm25[i] > 0 ? 1 / (60 + lexicalRank[i]) : 0),
+        hit: { score: round(cosine[i], 4), lexical: round(bm25[i], 2), metadata: c.metadata, text: c.text } as SearchHit,
+      }))
+      .sort((a, b) => b.fused - a.fused)
+      .slice(0, k)
+      .map((x) => x.hit);
+  }
+
+  private rankBy(mode: SearchMode, strategy: ChunkingStrategy, query: string, vector: number[], k: number): SearchHit[] {
+    return mode === 'hybrid' ? this.rankHybrid(strategy, query, vector, k) : this.rank(strategy, vector, k);
+  }
+
+  async search(query: string, k = 5, mode: SearchMode = 'vector'): Promise<Record<ChunkingStrategy, SearchHit[]>> {
     this.sync();
     if (!query?.trim()) throw new BadRequestException('query is required');
     const [{ vector }] = await embed([query.trim()], 'query');
     const result = {} as Record<ChunkingStrategy, SearchHit[]>;
-    for (const strategy of CHUNKING_STRATEGIES) result[strategy] = this.rank(strategy, vector, Math.min(Math.max(1, k), 50));
+    for (const strategy of CHUNKING_STRATEGIES) {
+      result[strategy] = this.rankBy(mode, strategy, query.trim(), vector, Math.min(Math.max(1, k), 50));
+    }
     return result;
   }
 
   /** Top-k chunks of one strategy for a chat question (Day 21: RAG in the chat). */
-  async retrieve(query: string, strategy: ChunkingStrategy, k: number): Promise<SearchHit[]> {
+  async retrieve(query: string, strategy: ChunkingStrategy, k: number, mode: SearchMode = 'vector'): Promise<SearchHit[]> {
     this.sync();
     if (!this.indexes.get(strategy)?.chunks.length || !query.trim()) return [];
     const [{ vector }] = await embed([query.trim()], 'query');
-    return this.rank(strategy, vector, Math.min(Math.max(1, k), 20));
+    return this.rankBy(mode, strategy, query.trim(), vector, Math.min(Math.max(1, k), 20));
   }
 
   private stats(strategy: ChunkingStrategy): StrategyStats | undefined {

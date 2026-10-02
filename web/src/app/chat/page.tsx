@@ -341,9 +341,12 @@ type Message = {
 // Day 21: chunks retrieved from the document index and given to the model.
 type RagStrategy = 'fixed' | 'structural';
 
+type RagSearchMode = 'hybrid' | 'vector';
+
 type RagInfo = {
   strategy: RagStrategy;
   k: number;
+  search?: RagSearchMode;
   hits: { chunk_id: string; score: number; title: string; file: string; source: string; section: string; text: string }[];
 };
 
@@ -372,6 +375,7 @@ type ChatSettings = {
   useRag: boolean;
   ragStrategy: RagStrategy;
   ragTopK: string;
+  ragSearch: RagSearchMode;
 };
 
 type Chat = {
@@ -438,6 +442,7 @@ function defaultSettings(): ChatSettings {
     useRag: false,
     ragStrategy: 'structural',
     ragTopK: '5',
+    ragSearch: 'hybrid',
   };
 }
 
@@ -1300,6 +1305,7 @@ export default function ChatPage() {
             use: settings.useRag,
             strategy: settings.ragStrategy,
             k: parseInt(settings.ragTopK, 10) || 5,
+            search: settings.ragSearch,
           },
         }),
       });
@@ -1786,7 +1792,8 @@ export default function ChatPage() {
               {message.meta?.rag && (
                 <details className="mt-1 rounded-md border border-black/10 bg-white px-2 py-1 text-xs">
                   <summary className="cursor-pointer text-[#5c5c5c]">
-                    RAG ({message.meta.rag.strategy}, top-{message.meta.rag.k}):{' '}
+                    RAG ({message.meta.rag.strategy}
+                    {message.meta.rag.search ? `, ${message.meta.rag.search}` : ''}, top-{message.meta.rag.k}):{' '}
                     {message.meta.rag.hits.length
                       ? `${message.meta.rag.hits.length} фрагм. из ${new Set(message.meta.rag.hits.map((h) => h.source)).size} док.`
                       : 'ничего не найдено — индекс пуст'}
@@ -2117,6 +2124,18 @@ export default function ChatPage() {
               >
                 <option value="structural">по структуре</option>
                 <option value="fixed">фикс. размер</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              поиск
+              <select
+                value={settings.ragSearch}
+                disabled={!settings.useRag}
+                onChange={(event) => updateSettings(activeChat.id, { ragSearch: event.target.value as RagSearchMode })}
+                className="rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
+              >
+                <option value="hybrid">гибридный</option>
+                <option value="vector">векторный</option>
               </select>
             </label>
             <label className="flex items-center gap-1">

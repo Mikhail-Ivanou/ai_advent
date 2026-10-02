@@ -90,6 +90,25 @@ limit, chunks spanning several sections, mid-sentence cuts, and two
 label-free retrieval checks (a document sentence → its place; a section
 heading → its section). See [docs/day21-chunking.md](docs/day21-chunking.md).
 
+## Day 22 — first RAG request
+
+`backend/src/rag/rag-answer.ts`: question → relevant chunks → chunks joined
+with the question → LLM, in two modes (`plain` / `rag`). Search is `hybrid`
+by default (embeddings + BM25 fused by reciprocal rank; rare names are found
+literally) or `vector`. The chat, `POST /rag/ask` (both answers side by side,
+also on the `/rag` page) and the evaluation use it.
+
+Control questions: `backend/src/rag/eval/ufo-questions.json` — 10 questions
+over the indexed book with the expected answer, key facts and source chapter
++ verbatim quote. Each is answered without and with RAG and scored
+(retrieval rank of the source passage, key facts, LLM judge, citations):
+
+```bash
+npm run rag-eval --workspace=backend -- --strategy structural --search hybrid --k 5 --report ../docs/day22-rag-eval.md
+```
+
+Result: [docs/day22-rag-eval.md](docs/day22-rag-eval.md).
+
 ## Next steps
 
 - [ ] Drop in the actual challenge repo(s) mentioned separately

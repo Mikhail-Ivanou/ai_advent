@@ -47,7 +47,19 @@ type ChunkMetadata = {
 };
 
 type Chunk = { metadata: ChunkMetadata; text: string; tokens: number };
-type SearchHit = { score: number; metadata: ChunkMetadata; text: string };
+type SearchHit = { score: number; lexical?: number; metadata: ChunkMetadata; text: string };
+type SearchMode = 'hybrid' | 'vector';
+const SEARCH_LABELS: Record<SearchMode, string> = { hybrid: 'гибридный (векторы + BM25)', vector: 'только векторы' };
+
+type RagAnswer = {
+  mode: 'rag' | 'plain';
+  answer: string;
+  model: string;
+  hits: SearchHit[];
+  usage?: { totalTokens: number };
+  costByn?: number;
+  durationMs: number;
+};
 
 type StrategyStats = {
   strategy: Strategy;
@@ -155,6 +167,14 @@ export default function RagPage() {
   const [k, setK] = useState(5);
   const [hits, setHits] = useState<Record<Strategy, SearchHit[]> | null>(null);
   const [searching, setSearching] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchMode>('hybrid');
+
+  // Day 22: one question, two LLM answers — without and with RAG.
+  const [askQuestion, setAskQuestion] = useState('');
+  const [askStrategy, setAskStrategy] = useState<Strategy>('structural');
+  const [askK, setAskK] = useState(5);
+  const [askResult, setAskResult] = useState<{ plain: RagAnswer; rag: RagAnswer } | null>(null);
+  const [asking, setAsking] = useState(false);
 
   const refresh = useCallback(async () => {
     const data = await api<{ documents: RagDocument[]; params: Params; embedding?: typeof embedding; status: Status }>('');
@@ -262,11 +282,35 @@ export default function RagPage() {
     setSearching(true);
     setError(null);
     try {
-      setHits(await api<Record<Strategy, SearchHit[]>>('/search', { method: 'POST', body: JSON.stringify({ query, k }) }));
+      setHits(
+        await api<Record<Strategy, SearchHit[]>>('/search', {
+          method: 'POST',
+          body: JSON.stringify({ query, k, mode: searchMode }),
+        }),
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function runAsk(event: FormEvent) {
+    event.preventDefault();
+    if (!askQuestion.trim()) return;
+    setAsking(true);
+    setError(null);
+    try {
+      setAskResult(
+        await api('/ask', {
+          method: 'POST',
+          body: JSON.stringify({ question: askQuestion, strategy: askStrategy, k: askK, search: searchMode }),
+        }),
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAsking(false);
     }
   }
 
@@ -618,6 +662,13 @@ export default function RagPage() {
             <label className="text-[#5c5c5c]">
               k <input type="number" className={`${input} w-14`} value={k} min={1} max={50} onChange={(e) => setK(Number(e.target.value))} />
             </label>
+            <select value={searchMode} onChange={(e) => setSearchMode(e.target.value as SearchMode)} className={input}>
+              {(Object.keys(SEARCH_LABELS) as SearchMode[]).map((m) => (
+                <option key={m} value={m}>
+                  {SEARCH_LABELS[m]}
+                </option>
+              ))}
+            </select>
             <button type="submit" className={button} disabled={searching || !query.trim() || !documents.length}>
               {searching ? 'Ищу…' : 'Найти'}
             </button>
@@ -630,6 +681,63 @@ export default function RagPage() {
                   {hits[s].map((h) => (
                     <ChunkCard key={h.metadata.chunk_id} metadata={h.metadata} text={h.text} score={h.score} />
                   ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className={section}>
+          <form onSubmit={runAsk} className="mb-3 flex flex-wrap items-center gap-2">
+            <h2 className="mr-2 font-medium">Вопрос к LLM: без RAG и с RAG</h2>
+            <input
+              value={askQuestion}
+              onChange={(e) => setAskQuestion(e.target.value)}
+              placeholder="Например: как звали молодого финна из Тампере?"
+              className={`${input} min-w-0 flex-1`}
+            />
+            <select value={askStrategy} onChange={(e) => setAskStrategy(e.target.value as Strategy)} className={input}>
+              {STRATEGIES.map((s) => (
+                <option key={s} value={s}>
+                  {STRATEGY_LABELS[s]}
+                </option>
+              ))}
+            </select>
+            <label className="text-[#5c5c5c]">
+              top-k{' '}
+              <input type="number" className={`${input} w-14`} value={askK} min={1} max={20} onChange={(e) => setAskK(Number(e.target.value))} />
+            </label>
+            <button type="submit" className={button} disabled={asking || !askQuestion.trim()}>
+              {asking ? 'Спрашиваю…' : 'Спросить'}
+            </button>
+          </form>
+          <p className="mb-2 text-[11px] text-[#5c5c5c]">
+            Один и тот же вопрос уходит в LLM дважды: как есть и вместе с найденными фрагментами ({SEARCH_LABELS[searchMode]} поиск,
+            режим выбирается рядом с поиском выше). Контрольные вопросы с оценкой — <span className="font-mono">npm run rag-eval</span>.
+          </p>
+          {askResult && (
+            <div className="grid gap-3 md:grid-cols-2">
+              {([['Без RAG', askResult.plain], ['С RAG', askResult.rag]] as [string, RagAnswer][]).map(([label, a]) => (
+                <div key={label} className="flex flex-col gap-2">
+                  <h3 className="font-medium text-pine">{label}</h3>
+                  <p className="whitespace-pre-wrap rounded-md bg-paper p-2 text-xs">{a.answer}</p>
+                  <p className="text-[11px] text-[#5c5c5c]">
+                    {a.model} · {(a.durationMs / 1000).toFixed(1)} с{a.usage && <> · {a.usage.totalTokens} токенов</>}
+                    {a.costByn !== undefined && <> · {a.costByn.toFixed(5)} BYN</>}
+                  </p>
+                  {a.hits.length > 0 && (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-[#5c5c5c]">Фрагменты в запросе ({a.hits.length})</summary>
+                      <div className="mt-1 flex flex-col gap-2">
+                        {a.hits.map((h, i) => (
+                          <div key={h.metadata.chunk_id}>
+                            <span className="font-mono text-[11px]">[{i + 1}]</span>
+                            <ChunkCard metadata={h.metadata} text={h.text} score={h.score} />
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                 </div>
               ))}
             </div>

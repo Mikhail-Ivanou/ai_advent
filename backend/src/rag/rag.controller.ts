@@ -1,5 +1,6 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { CHUNKING_STRATEGIES, ChunkingParams, ChunkingStrategy } from './rag.types';
+import { answerQuestion } from './rag-answer';
 import { RagService } from './rag.service';
 
 /** Document indexing (Day 21): add documents by URL or upload, inspect chunks, search, compare strategies. */
@@ -49,8 +50,32 @@ export class RagController {
   }
 
   @Post('search')
-  search(@Body() body: { query: string; k?: number }) {
-    return this.ragService.search(body.query, body.k);
+  search(@Body() body: { query: string; k?: number; mode?: string }) {
+    return this.ragService.search(body.query, body.k, body.mode === 'hybrid' ? 'hybrid' : 'vector');
+  }
+
+  /**
+   * The same question answered by the LLM twice — without RAG and with the
+   * retrieved chunks joined to it (Day 22), for a side-by-side comparison.
+   */
+  @Post('ask')
+  async ask(@Body() body: { question: string; strategy?: string; k?: number; search?: string; model?: string }) {
+    if (!body.question?.trim()) throw new BadRequestException('question is required');
+    const options = {
+      strategy: (body.strategy === 'fixed' ? 'fixed' : 'structural') as ChunkingStrategy,
+      k: body.k,
+      search: (body.search === 'vector' ? 'vector' : 'hybrid') as 'vector' | 'hybrid',
+      model: body.model,
+    };
+    try {
+      const [plain, rag] = await Promise.all([
+        answerQuestion(this.ragService, body.question.trim(), 'plain', options),
+        answerQuestion(this.ragService, body.question.trim(), 'rag', options),
+      ]);
+      return { plain, rag };
+    } catch (error) {
+      throw new BadGatewayException(error instanceof Error ? error.message : 'LLM request failed');
+    }
   }
 
   /** Strategy statistics; `sample` > 0 also runs the self-retrieval evaluation with that many queries. */

@@ -8,6 +8,7 @@ import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 import { InvariantService } from '../invariant/invariant.service';
 import { McpService } from '../mcp/mcp.service';
+import { formatRagContext, normalizeRagConfig } from '../rag/rag-answer';
 import { RagService } from '../rag/rag.service';
 import { chatMeta } from '../mcp/mcp.types';
 
@@ -180,19 +181,14 @@ export class AgentsService implements OnModuleInit {
    * can cite them and the user can check where an answer came from.
    */
   private async retrieve(prompt: string, config: RagConfig): Promise<{ context?: string; info: RagInfo }> {
-    const strategy = config.strategy === 'fixed' ? 'fixed' : 'structural';
-    const k = Math.min(Math.max(1, Math.round(config.k ?? 5)), 20);
-    const hits = await this.ragService.retrieve(prompt, strategy, k);
-    const context = hits.length
-      ? hits
-          .map((h, i) => `[${i + 1}] ${h.metadata.title} — ${h.metadata.section || h.metadata.file} (${h.metadata.source})\n${h.text}`)
-          .join('\n\n')
-      : undefined;
+    const { strategy, k, search } = normalizeRagConfig(config);
+    const hits = await this.ragService.retrieve(prompt, strategy, k, search);
     return {
-      context,
+      context: formatRagContext(hits),
       info: {
         strategy,
         k,
+        search,
         hits: hits.map((h) => ({
           chunk_id: h.metadata.chunk_id,
           score: h.score,

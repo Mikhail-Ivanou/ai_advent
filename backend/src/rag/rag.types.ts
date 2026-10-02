@@ -113,8 +113,18 @@ export interface RagIndexFile {
   chunks: IndexedChunk[];
 }
 
+/**
+ * How chunks are found: "vector" — cosine similarity of embeddings only;
+ * "hybrid" — embeddings and BM25 ranked separately and fused (reciprocal rank
+ * fusion), so rare names/terms matched literally also count (Day 22).
+ */
+export type SearchMode = 'vector' | 'hybrid';
+
 export interface SearchHit {
+  /** Cosine similarity to the query (shown in both modes; in hybrid mode the order is by fused rank). */
   score: number;
+  /** Hybrid mode: BM25 score of the chunk, 0 when no query term occurs in it. */
+  lexical?: number;
   metadata: ChunkMetadata;
   text: string;
 }

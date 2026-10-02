@@ -92,7 +92,9 @@ function fb2Title(section: HTMLElement): string | undefined {
   );
   if (!title) return undefined;
   const lines = title.querySelectorAll('p').map((p) => collapse(p.textContent)).filter(Boolean);
-  return (lines.length ? lines.join('. ') : collapse(title.textContent)) || undefined;
+  // "Глава первая" + "Декабрь 1998." -> "Глава первая. Декабрь 1998." (no double dot when a line already ends with one).
+  const joined = lines.reduce((acc, line) => (!acc ? line : /[.!?…:;]$/.test(acc) ? `${acc} ${line}` : `${acc}. ${line}`), '');
+  return (joined || collapse(title.textContent)) || undefined;
 }
 
 function walkFb2Section(section: HTMLElement, path: string[], builder: SectionBuilder): void {

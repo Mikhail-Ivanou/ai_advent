@@ -118,11 +118,14 @@ export interface RagConfig {
   strategy?: 'fixed' | 'structural';
   /** How many chunks to put into the prompt. Default 5. */
   k?: number;
+  /** "hybrid" (embeddings + BM25, default) or "vector" (embeddings only) — Day 22. */
+  search?: 'vector' | 'hybrid';
 }
 
 export interface RagInfo {
   strategy: 'fixed' | 'structural';
   k: number;
+  search: 'vector' | 'hybrid';
   /** Chunks put into the prompt, in citation order ([1] is the first). */
   hits: { chunk_id: string; score: number; title: string; file: string; source: string; section: string; text: string }[];
 }
