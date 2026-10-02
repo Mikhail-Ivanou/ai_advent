@@ -23,6 +23,9 @@ export default function Home() {
       <Link href="/chat" className="text-pine underline">
         Try the chat →
       </Link>
+      <Link href="/rag" className="text-pine underline">
+        Document indexing →
+      </Link>
     </main>
   );
 }

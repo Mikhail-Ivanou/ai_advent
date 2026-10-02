@@ -1,13 +1,14 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Agent, AgentAskResult, ContextConfig, InvariantConfig, McpConfig, MemoryConfig, TaskConfig } from './agent';
+import { Agent, AgentAskResult, ContextConfig, InvariantConfig, McpConfig, MemoryConfig, RagConfig, RagInfo, TaskConfig } from './agent';
 import { AskOptions, ChatMessage, LlmTool, LlmToolset, ReasoningMode } from './llm.client';
 import { TaskStage, TaskState } from './task-state';
 import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 import { InvariantService } from '../invariant/invariant.service';
 import { McpService } from '../mcp/mcp.service';
+import { RagService } from '../rag/rag.service';
 import { chatMeta } from '../mcp/mcp.types';
 
 const STORE_PATH = path.join(process.cwd(), 'data', 'agents.json');
@@ -76,6 +77,7 @@ export class AgentsService implements OnModuleInit {
     private readonly profileService: ProfileService,
     private readonly invariantService: InvariantService,
     private readonly mcpService: McpService,
+    private readonly ragService: RagService,
   ) {}
 
   async onModuleInit() {
@@ -135,8 +137,10 @@ export class AgentsService implements OnModuleInit {
     taskConfig?: TaskConfig,
     invariantConfig?: InvariantConfig,
     mcpConfig?: McpConfig,
+    ragConfig?: RagConfig,
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
+    const rag = ragConfig?.use ? await this.retrieve(prompt, ragConfig) : undefined;
     const tools = (mcpConfig?.useTools ?? true) ? this.buildMcpToolset(id) : undefined;
     const longTermMemoryText = this.memoryService.formatForPrompt();
     const profileText = this.profileService.formatForPrompt(profileId);
@@ -144,7 +148,7 @@ export class AgentsService implements OnModuleInit {
     const result = await agent.ask(
       prompt,
       reasoningMode,
-      { ...options, profile: profileText, tools },
+      { ...options, profile: profileText, tools, ragContext: rag?.context },
       contextConfig,
       memoryConfig,
       longTermMemoryText,
@@ -155,6 +159,7 @@ export class AgentsService implements OnModuleInit {
     // Agent only ever sees the already-formatted profile text, not its id/name
     // (that'd mean handing it a ProfileService dependency just to label its
     // own output) — attach the label here, where both are in scope.
+    if (rag) result.rag = rag.info;
     if (profileId) {
       const profile = this.profileService.get(profileId);
       if (profile) result.profile = { id: profile.id, name: profile.name };
@@ -167,6 +172,38 @@ export class AgentsService implements OnModuleInit {
     }
     await this.persist();
     return result;
+  }
+
+  /**
+   * RAG (Day 21): the question itself is the search query; the top-k chunks
+   * go into the prompt numbered, with their file and section so the model
+   * can cite them and the user can check where an answer came from.
+   */
+  private async retrieve(prompt: string, config: RagConfig): Promise<{ context?: string; info: RagInfo }> {
+    const strategy = config.strategy === 'fixed' ? 'fixed' : 'structural';
+    const k = Math.min(Math.max(1, Math.round(config.k ?? 5)), 20);
+    const hits = await this.ragService.retrieve(prompt, strategy, k);
+    const context = hits.length
+      ? hits
+          .map((h, i) => `[${i + 1}] ${h.metadata.title} — ${h.metadata.section || h.metadata.file} (${h.metadata.source})\n${h.text}`)
+          .join('\n\n')
+      : undefined;
+    return {
+      context,
+      info: {
+        strategy,
+        k,
+        hits: hits.map((h) => ({
+          chunk_id: h.metadata.chunk_id,
+          score: h.score,
+          title: h.metadata.title,
+          file: h.metadata.file,
+          source: h.metadata.source,
+          section: h.metadata.section,
+          text: h.text,
+        })),
+      },
+    };
   }
 
   /**

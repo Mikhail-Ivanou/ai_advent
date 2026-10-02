@@ -1,4 +1,4 @@
-import { ContextConfig, InvariantConfig, McpConfig, MemoryConfig, TaskConfig } from './agent';
+import { ContextConfig, InvariantConfig, McpConfig, MemoryConfig, RagConfig, TaskConfig } from './agent';
 import { ReasoningMode } from './llm.client';
 
 export class AskDto {
@@ -21,4 +21,6 @@ export class AskDto {
   invariants?: InvariantConfig;
   /** Whether to offer connected MCP servers' tools to the model this turn (Day 17). */
   mcp?: McpConfig;
+  /** Whether to add chunks retrieved from the document index to the prompt (Day 21). */
+  rag?: RagConfig;
 }

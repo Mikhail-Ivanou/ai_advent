@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 
 type Usage = {
@@ -332,9 +333,21 @@ type Message = {
     task?: TaskInfo;
     invariants?: InvariantCheckInfo;
     toolCalls?: ToolCallLog[];
+    rag?: RagInfo;
     requests: LlmRequestLog[];
   };
 };
+
+// Day 21: chunks retrieved from the document index and given to the model.
+type RagStrategy = 'fixed' | 'structural';
+
+type RagInfo = {
+  strategy: RagStrategy;
+  k: number;
+  hits: { chunk_id: string; score: number; title: string; file: string; source: string; section: string; text: string }[];
+};
+
+type RagIndexSummary = { documents: number; chunks: Record<RagStrategy, number> };
 
 type Format = 'text' | 'json';
 type ReasoningMode = 'direct' | 'step-by-step' | 'self-prompt' | 'expert-panel';
@@ -356,6 +369,9 @@ type ChatSettings = {
   useInvariants: boolean;
   checkInvariants: boolean;
   useMcpTools: boolean;
+  useRag: boolean;
+  ragStrategy: RagStrategy;
+  ragTopK: string;
 };
 
 type Chat = {
@@ -419,6 +435,9 @@ function defaultSettings(): ChatSettings {
     useInvariants: true,
     checkInvariants: true,
     useMcpTools: true,
+    useRag: false,
+    ragStrategy: 'structural',
+    ragTopK: '5',
   };
 }
 
@@ -510,6 +529,7 @@ export default function ChatPage() {
 
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [ragIndex, setRagIndex] = useState<RagIndexSummary | null>(null);
   const [editingMcpId, setEditingMcpId] = useState<string | null>(null);
   const [mcpDraft, setMcpDraft] = useState<McpServerDraft>(emptyMcpServerDraft());
   const [mcpBusyIds, setMcpBusyIds] = useState<Set<string>>(new Set());
@@ -589,6 +609,28 @@ export default function ChatPage() {
   useEffect(() => {
     if (!hydrated) return;
     refreshInvariants();
+  }, [hydrated]);
+
+  async function refreshRagIndex() {
+    try {
+      const response = await fetch('/api/backend/rag');
+      if (!response.ok) return;
+      const data: { documents: { chunks: Record<RagStrategy, number> }[] } = await response.json();
+      setRagIndex({
+        documents: data.documents.length,
+        chunks: {
+          fixed: data.documents.reduce((sum, d) => sum + d.chunks.fixed, 0),
+          structural: data.documents.reduce((sum, d) => sum + d.chunks.structural, 0),
+        },
+      });
+    } catch {
+      // Best-effort — the RAG panel just shows nothing about the index.
+    }
+  }
+
+  useEffect(() => {
+    if (!hydrated) return;
+    refreshRagIndex();
   }, [hydrated]);
 
   async function refreshMcpServers() {
@@ -1254,6 +1296,11 @@ export default function ChatPage() {
           mcp: {
             useTools: settings.useMcpTools,
           },
+          rag: {
+            use: settings.useRag,
+            strategy: settings.ragStrategy,
+            k: parseInt(settings.ragTopK, 10) || 5,
+          },
         }),
       });
 
@@ -1274,6 +1321,7 @@ export default function ChatPage() {
         task?: TaskInfo;
         invariants?: InvariantCheckInfo;
         toolCalls?: ToolCallLog[];
+        rag?: RagInfo;
         requests: LlmRequestLog[];
       } = await response.json();
 
@@ -1295,6 +1343,7 @@ export default function ChatPage() {
               task: data.task,
               invariants: data.invariants,
               toolCalls: data.toolCalls,
+              rag: data.rag,
               requests: data.requests,
             },
           },
@@ -1419,6 +1468,12 @@ export default function ChatPage() {
       <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-hidden">
         <div className="shrink-0 flex items-center justify-between">
           <h1 className="truncate text-2xl font-medium">{chatTitle(activeChat)}</h1>
+          <Link
+            href="/rag"
+            className="shrink-0 rounded-md border border-black/10 bg-white px-3 py-1 text-sm hover:border-pine hover:text-pine"
+          >
+            RAG: документы →
+          </Link>
         </div>
 
         <section className="shrink-0 rounded-lg border border-black/10 bg-white text-sm">
@@ -1728,6 +1783,33 @@ export default function ChatPage() {
               >
                 {message.content}
               </p>
+              {message.meta?.rag && (
+                <details className="mt-1 rounded-md border border-black/10 bg-white px-2 py-1 text-xs">
+                  <summary className="cursor-pointer text-[#5c5c5c]">
+                    RAG ({message.meta.rag.strategy}, top-{message.meta.rag.k}):{' '}
+                    {message.meta.rag.hits.length
+                      ? `${message.meta.rag.hits.length} фрагм. из ${new Set(message.meta.rag.hits.map((h) => h.source)).size} док.`
+                      : 'ничего не найдено — индекс пуст'}
+                  </summary>
+                  <ol className="mt-1 flex flex-col gap-1">
+                    {message.meta.rag.hits.map((hit, hitIndex) => (
+                      <li key={hit.chunk_id}>
+                        <details>
+                          <summary className="cursor-pointer">
+                            <span className="font-mono">[{hitIndex + 1}]</span>{' '}
+                            <span className="text-pine">{hit.score.toFixed(3)}</span> · {hit.title}
+                            {hit.section && <> › {hit.section}</>}
+                          </summary>
+                          <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap text-[11px] text-ink">{hit.text}</p>
+                          <p className="text-[11px] text-[#5c5c5c]">
+                            {hit.source} · <span className="font-mono">{hit.chunk_id}</span>
+                          </p>
+                        </details>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
               {message.meta?.toolCalls && message.meta.toolCalls.length > 0 && (
                 <div className="mt-1 flex flex-col gap-1">
                   {(() => {
@@ -1997,6 +2079,62 @@ export default function ChatPage() {
               </div>
             </>
           )}
+        </section>
+
+        <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-pine">RAG — документы</h2>
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={settings.useRag}
+                onChange={(event) => updateSettings(activeChat.id, { useRag: event.target.checked })}
+              />
+              учитывать
+            </label>
+          </div>
+          {ragIndex && ragIndex.documents === 0 ? (
+            <p className="mb-1 text-[#5c5c5c]">Индекс пуст — добавьте документы в настройках RAG.</p>
+          ) : (
+            <p className="mb-1 text-[#5c5c5c]">
+              {settings.useRag ? 'Найденные фрагменты добавляются к запросу' : 'Не используется в этом чате'}
+              {ragIndex && (
+                <>
+                  {' '}
+                  · {ragIndex.documents} док., {ragIndex.chunks[settings.ragStrategy]} чанков
+                </>
+              )}
+            </p>
+          )}
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1">
+              стратегия
+              <select
+                value={settings.ragStrategy}
+                disabled={!settings.useRag}
+                onChange={(event) => updateSettings(activeChat.id, { ragStrategy: event.target.value as RagStrategy })}
+                className="rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
+              >
+                <option value="structural">по структуре</option>
+                <option value="fixed">фикс. размер</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              top-k
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={settings.ragTopK}
+                disabled={!settings.useRag}
+                onChange={(event) => updateSettings(activeChat.id, { ragTopK: event.target.value })}
+                className="w-12 rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
+              />
+            </label>
+          </div>
+          <Link href="/rag" className="text-[11px] text-pine underline">
+            Настройки RAG: документы, чанкинг, сравнение →
+          </Link>
         </section>
 
         <section className="shrink-0 rounded-lg border border-black/10 bg-white p-3 text-xs">

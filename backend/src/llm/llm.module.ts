@@ -3,6 +3,7 @@ import { MemoryModule } from '../memory/memory.module';
 import { ProfileModule } from '../profile/profile.module';
 import { InvariantModule } from '../invariant/invariant.module';
 import { McpModule } from '../mcp/mcp.module';
+import { RagModule } from '../rag/rag.module';
 import { AgentsController } from './agents.controller';
 import { AgentsService } from './agents.service';
 import { BackgroundController } from './background.controller';
@@ -11,7 +12,7 @@ import { LlmController } from './llm.controller';
 import { LlmService } from './llm.service';
 
 @Module({
-  imports: [MemoryModule, ProfileModule, InvariantModule, McpModule],
+  imports: [MemoryModule, ProfileModule, InvariantModule, McpModule, RagModule],
   controllers: [LlmController, AgentsController, BackgroundController],
   providers: [LlmService, AgentsService, BackgroundService],
 })

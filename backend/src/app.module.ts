@@ -6,9 +6,10 @@ import { MemoryModule } from './memory/memory.module';
 import { ProfileModule } from './profile/profile.module';
 import { InvariantModule } from './invariant/invariant.module';
 import { McpModule } from './mcp/mcp.module';
+import { RagModule } from './rag/rag.module';
 
 @Module({
-  imports: [LlmModule, MemoryModule, ProfileModule, InvariantModule, McpModule],
+  imports: [LlmModule, MemoryModule, ProfileModule, InvariantModule, McpModule, RagModule],
   controllers: [AppController],
   providers: [AppService],
 })

@@ -38,6 +38,7 @@ export class AgentsController {
         body.task,
         body.invariants,
         body.mcp,
+        body.rag,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'LLM request failed';

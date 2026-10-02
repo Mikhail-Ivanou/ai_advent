@@ -10,6 +10,7 @@ advent/
 ├── backend/      NestJS API (TypeScript)
 ├── web/          Next.js frontend (TypeScript, App Router, Tailwind)
 └── mcp-weather/  MCP server with a weather tool (see mcp-weather/README.md)
+docs/             reports (e.g. Day 21 chunking comparison)
 ```
 
 ## Getting started
@@ -46,6 +47,48 @@ cp mcp-weather/.env.example mcp-weather/.env
 This is intentionally bare-bones — a starting point for whatever the challenge
 turns out to be. Add modules/routes to `backend/src` and pages/components to
 `web/src/app` as the actual challenge repos come in.
+
+## Day 21 — document indexing (RAG)
+
+`backend/src/rag` builds a local index of documents for retrieval:
+
+- **Sources**: a URL (HTML article, raw README, PDF, fb2) or an uploaded file —
+  `.fb2` (incl. windows-1251), `.pdf`, `.md`, `.html`, `.txt`, source code.
+  Each is parsed into a section tree (book sections, headings, PDF pages,
+  top-level code declarations).
+- **Chunking**, both strategies for every document:
+  - `fixed` — a sliding window of `size` characters with `overlap`, snapped to
+    sentence/word boundaries, ignoring structure;
+  - `structural` — one chunk per section; long sections split by paragraphs
+    (≤ `maxSize`), short ones merged with siblings/parent text (< `minSize`);
+    each chunk starts with its heading path.
+- **Embeddings** locally with transformers.js (`Xenova/multilingual-e5-small`,
+  384 dims, no API key; the model is downloaded once into `data/rag/models`).
+- **Index**: `backend/data/rag/fixed.json` and `structural.json` — chunk text,
+  embedding and metadata (`chunk_id`, `source`, `title`, `file`, `section`,
+  offsets, `sectionsSpanned`, `part`); parsed documents in `data/rag/documents`.
+
+UI: http://localhost:3000/rag — add documents, view chunks of both strategies
+side by side, search, compare. CLI:
+
+```bash
+npm run rag --workspace=backend -- index book.fb2 https://ru.wikipedia.org/wiki/Нейронная_сеть
+npm run rag --workspace=backend -- search "как обучается перцептрон"
+npm run rag --workspace=backend -- compare --sample 80 --report ../docs/day21-chunking.md
+npm run rag --workspace=backend -- params --size 800 --overlap 100 --max 1400 --min 300
+```
+
+In the chat, the **RAG — документы** panel turns retrieval on per chat
+(off by default) and picks the index (`structural`/`fixed`) and top-k. The
+question becomes the search query; the chunks go into the prompt numbered
+`[n]` with their file and section, and the sources used are listed under the
+answer. The header button **RAG: документы →** opens `/rag`.
+`RAG_DATA_DIR` moves the index elsewhere (e.g. a scratch index for experiments).
+
+The comparison reports chunk-size statistics, truncation by the model's token
+limit, chunks spanning several sections, mid-sentence cuts, and two
+label-free retrieval checks (a document sentence → its place; a section
+heading → its section). See [docs/day21-chunking.md](docs/day21-chunking.md).
 
 ## Next steps
 

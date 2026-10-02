@@ -65,6 +65,8 @@ export interface AskOptions {
   taskState?: string;
   /** Hard invariants — architecture/decisions/stack/business rules the assistant must never propose violating (see Day 14). Formatted text, or undefined if none are active. */
   invariants?: string;
+  /** Excerpts retrieved from the indexed documents for this question, numbered [1]..[n] (Day 21). */
+  ragContext?: string;
   /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
   tools?: LlmToolset;
 }
@@ -224,6 +226,16 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
           {
             role: 'system',
             content: `Known facts about this conversation (key-value memory, updated as things change — treat this as ground truth): ${options.facts}`,
+          },
+        ]
+      : []),
+    // Right before the dialog: retrieved for this very question, so it's the
+    // most specific context of all.
+    ...(options.ragContext
+      ? [
+          {
+            role: 'system',
+            content: `Excerpts retrieved from the user's indexed documents (RAG) as relevant to the question below, most relevant first. Treat them as the primary source: when they cover the question, answer from them and cite the excerpts you used as [n]. If they don't contain the answer, say so explicitly and only then answer from general knowledge, marking that part as not from the documents. Do not invent citations.\n\n${options.ragContext}`,
           },
         ]
       : []),

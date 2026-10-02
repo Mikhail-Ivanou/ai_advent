@@ -111,6 +111,22 @@ export interface McpConfig {
   useTools?: boolean;
 }
 
+/** Retrieval from the document index (Day 21). Off by default — not every chat is about the documents. */
+export interface RagConfig {
+  use?: boolean;
+  /** Which index to search. Default "structural". */
+  strategy?: 'fixed' | 'structural';
+  /** How many chunks to put into the prompt. Default 5. */
+  k?: number;
+}
+
+export interface RagInfo {
+  strategy: 'fixed' | 'structural';
+  k: number;
+  /** Chunks put into the prompt, in citation order ([1] is the first). */
+  hits: { chunk_id: string; score: number; title: string; file: string; source: string; section: string; text: string }[];
+}
+
 export interface InvariantConfig {
   /** Inject invariants into the prompt as hard constraints this turn. Default true. */
   use?: boolean;
@@ -140,6 +156,8 @@ export interface AgentAskResult {
   invariants?: InvariantCheckInfo;
   /** Which personalization profile (if any) was applied to this turn — populated by AgentsService, since Agent itself only sees the already-formatted text (Day 12). */
   profile?: { id: string; name: string };
+  /** Document chunks retrieved for this turn and given to the model, when RAG was on (Day 21). */
+  rag?: RagInfo;
   /** MCP tool calls the model made while producing `answer` (Day 17). */
   toolCalls?: ToolCallLog[];
   /** The exact request(s) sent to the API for this turn, including any summarization/facts-extraction/memory-routing/task-state/invariant-check calls. */
@@ -450,7 +468,8 @@ export class Agent {
       (longTermMemoryForPrompt ? countTokens(longTermMemoryForPrompt) : 0) +
       (options?.profile ? countTokens(options.profile) : 0) +
       (taskStateForPrompt ? countTokens(taskStateForPrompt) : 0) +
-      (invariantsForPrompt ? countTokens(invariantsForPrompt) : 0);
+      (invariantsForPrompt ? countTokens(invariantsForPrompt) : 0) +
+      (options?.ragContext ? countTokens(options.ragContext) : 0);
 
     const start = Date.now();
     const result = await callLlmWithReasoning(prompt, reasoningMode, {
