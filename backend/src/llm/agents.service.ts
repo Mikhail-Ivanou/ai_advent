@@ -4,12 +4,15 @@ import * as path from 'path';
 import { Agent, AgentAskResult, ContextConfig, InvariantConfig, McpConfig, MemoryConfig, RagConfig, RagInfo, TaskConfig } from './agent';
 import { AskOptions, ChatMessage, LlmTool, LlmToolset, ReasoningMode } from './llm.client';
 import { TaskStage, TaskState } from './task-state';
+import { countTokens } from './tokenizer';
 import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 import { InvariantService } from '../invariant/invariant.service';
 import { McpService } from '../mcp/mcp.service';
+import { groundAnswer, lowRelevanceAnswer, renderGrounding } from '../rag/grounding';
 import { formatRagContext } from '../rag/rag-answer';
-import { normalizePipeline, runPipeline } from '../rag/rag-pipeline';
+import { normalizePipeline, RankedHit, runPipeline } from '../rag/rag-pipeline';
+import { SearchHit } from '../rag/rag.types';
 import { RagService } from '../rag/rag.service';
 import { chatMeta } from '../mcp/mcp.types';
 
@@ -143,6 +146,7 @@ export class AgentsService implements OnModuleInit {
   ): Promise<AgentAskResult> {
     const agent = this.getOrCreate(id);
     const rag = ragConfig?.use ? await this.retrieve(prompt, ragConfig) : undefined;
+    if (rag && !rag.hits.length) return this.answerUnknown(agent, prompt, rag);
     const tools = (mcpConfig?.useTools ?? true) ? this.buildMcpToolset(id) : undefined;
     const longTermMemoryText = this.memoryService.formatForPrompt();
     const profileText = this.profileService.formatForPrompt(profileId);
@@ -150,7 +154,7 @@ export class AgentsService implements OnModuleInit {
     const result = await agent.ask(
       prompt,
       reasoningMode,
-      { ...options, profile: profileText, tools, ragContext: rag?.context, ragNoResults: !!rag && !rag.context },
+      { ...options, profile: profileText, tools, ragContext: rag?.context },
       contextConfig,
       memoryConfig,
       longTermMemoryText,
@@ -161,7 +165,16 @@ export class AgentsService implements OnModuleInit {
     // Agent only ever sees the already-formatted profile text, not its id/name
     // (that'd mean handing it a ProfileService dependency just to label its
     // own output) — attach the label here, where both are in scope.
-    if (rag) result.rag = rag.info;
+    if (rag) {
+      // Day 24: check the reply against the excerpts — sources resolved to real
+      // chunks, quotes looked up in them; no confirmed quote means "не знаю".
+      // The checked, rendered form replaces the raw reply in the history too.
+      const grounding = groundAnswer(result.answer, rag.hits);
+      result.answer = renderGrounding(grounding);
+      const last = agent.history[agent.history.length - 1];
+      if (last?.role === 'assistant') last.content = result.answer;
+      result.rag = { ...rag.info, grounding };
+    }
     if (profileId) {
       const profile = this.profileService.get(profileId);
       if (profile) result.profile = { id: profile.id, name: profile.name };
@@ -181,11 +194,16 @@ export class AgentsService implements OnModuleInit {
    * go into the prompt numbered, with their file and section so the model
    * can cite them and the user can check where an answer came from.
    */
-  private async retrieve(prompt: string, config: RagConfig): Promise<{ context?: string; info: RagInfo }> {
+  private async retrieve(
+    prompt: string,
+    config: RagConfig,
+  ): Promise<{ context?: string; hits: SearchHit[]; candidates: RankedHit[]; info: RagInfo }> {
     const cfg = normalizePipeline(config);
     const result = await runPipeline(this.ragService, prompt, cfg);
     return {
       context: formatRagContext(result.hits),
+      hits: result.hits,
+      candidates: result.candidates,
       info: {
         strategy: cfg.strategy,
         k: cfg.k,
@@ -206,6 +224,29 @@ export class AgentsService implements OnModuleInit {
           text: h.text,
         })),
       },
+    };
+  }
+
+  /**
+   * Day 24: retrieval found nothing relevant enough — the assistant must say
+   * it doesn't know and ask to clarify, without asking the LLM (which would
+   * answer from memory). The turn still goes into the chat's history.
+   */
+  private async answerUnknown(
+    agent: Agent,
+    prompt: string,
+    rag: { candidates: RankedHit[]; info: RagInfo },
+  ): Promise<AgentAskResult> {
+    const grounding = lowRelevanceAnswer(rag.candidates, rag.info.minScore);
+    agent.history.push({ role: 'user', content: prompt }, { role: 'assistant', content: grounding.answer });
+    await this.persist();
+    return {
+      answer: grounding.answer,
+      model: 'rag-guard',
+      responseTimeMs: 0,
+      tokens: { requestTokens: countTokens(prompt), historyTokens: 0, responseTokens: countTokens(grounding.answer) },
+      rag: { ...rag.info, grounding },
+      requests: [],
     };
   }
 

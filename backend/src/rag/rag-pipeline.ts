@@ -49,7 +49,7 @@ export interface PipelineResult {
   query: string;
   /** The rewritten search query, when rewriting was on. */
   rewritten?: string;
-  /** First-stage candidates, before reranking and filtering. */
+  /** First-stage candidates in first-stage order, before filtering (with the reranker's score when one ran). */
   candidates: RankedHit[];
   /** What goes to the LLM: reranked, filtered, cut to k. */
   hits: RankedHit[];
@@ -140,18 +140,19 @@ export async function runPipeline(rag: RagService, question: string, input: Part
   const searchStarted = Date.now();
   const queries = rewritten && rewritten !== question ? [question, rewritten] : [question];
   const rankings = await Promise.all(queries.map((q) => rag.retrieve(q, cfg.strategy, cfg.candidates, cfg.search)));
-  const candidates = queries.length > 1 ? fuse(rankings, cfg.candidates) : rankings[0].map((h, i) => ({ ...h, firstRank: i + 1 }));
+  const found = queries.length > 1 ? fuse(rankings, cfg.candidates) : rankings[0].map((h, i) => ({ ...h, firstRank: i + 1 }));
   timings.searchMs = Date.now() - searchStarted;
 
+  let candidates: RankedHit[] = found;
   let ranked: RankedHit[] = candidates;
   if (cfg.rerank !== 'none' && candidates.length) {
     const started = Date.now();
     // The reranker judges against the user's actual question, not the rewrite.
     const { scores, usage: rerankUsage } = await rerankScores(cfg.rerank, question, candidates.map((c) => c.text), cfg.model);
     usage = sumUsage(usage, rerankUsage);
-    ranked = candidates
-      .map((c, i) => ({ ...c, rerankScore: Math.round(scores[i] * 1e4) / 1e4 }))
-      .sort((a, b) => b.rerankScore! - a.rerankScore!);
+    // Candidates keep their first-stage order but carry the reranker's score.
+    candidates = candidates.map((c, i) => ({ ...c, rerankScore: Math.round(scores[i] * 1e4) / 1e4 }));
+    ranked = [...candidates].sort((a, b) => b.rerankScore! - a.rerankScore!);
     timings.rerankMs = Date.now() - started;
   }
 

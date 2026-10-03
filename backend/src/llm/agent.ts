@@ -1,3 +1,4 @@
+import { Grounding } from '../rag/grounding';
 import {
   AskOptions,
   ChatMessage,
@@ -141,6 +142,8 @@ export interface RagInfo {
   /** Candidates found before reranking/filtering, and how many the threshold dropped. */
   candidates: number;
   filteredOut: number;
+  /** Day 24: sources, verified quotes, or why the answer is "не знаю". */
+  grounding?: Grounding;
   /** Chunks put into the prompt, in citation order ([1] is the first). */
   hits: { chunk_id: string; score: number; rerankScore?: number; title: string; file: string; source: string; section: string; text: string }[];
 }

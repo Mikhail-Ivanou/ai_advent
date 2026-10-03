@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { Grounding, GroundingView } from '@/components/GroundingView';
 
 // Day 21: document indexing — add documents by URL or file, chunk them with
 // two strategies, embed locally, inspect chunks and compare the strategies.
@@ -62,6 +63,7 @@ type RagAnswer = {
   answer: string;
   model: string;
   hits: RankedHit[];
+  grounding?: Grounding;
   pipeline?: {
     rewritten?: string;
     candidates: RankedHit[];
@@ -795,6 +797,7 @@ export default function RagPage() {
                 <div key={label} className="flex flex-col gap-2">
                   <h3 className="font-medium text-pine">{label}</h3>
                   <p className="whitespace-pre-wrap rounded-md bg-paper p-2 text-xs">{a.answer}</p>
+                  {a.grounding && <GroundingView grounding={a.grounding} />}
                   <p className="text-[11px] text-[#5c5c5c]">
                     {a.model} · {(a.durationMs / 1000).toFixed(1)} с{a.usage && <> · {a.usage.totalTokens} токенов</>}
                     {a.costByn !== undefined && <> · {a.costByn.toFixed(5)} BYN</>}
@@ -818,12 +821,13 @@ export default function RagPage() {
                         <ol className="mt-1 list-decimal pl-5">
                           {a.pipeline.candidates.map((c) => {
                             const kept = a.hits.findIndex((h) => h.metadata.chunk_id === c.metadata.chunk_id);
-                            const scored = a.hits[kept]?.rerankScore;
+                            const scored = c.rerankScore;
                             return (
                               <li key={c.metadata.chunk_id} className={kept >= 0 ? 'text-ink' : ''}>
                                 {c.metadata.section.split(' › ').pop()}
                                 {c.metadata.part && ` (ч. ${c.metadata.part})`} · cos {c.score.toFixed(3)}
-                                {kept >= 0 ? <> → [{kept + 1}]{scored !== undefined && <>, реранкер {scored.toFixed(3)}</>}</> : ' · не вошёл (ниже порога или за top-K)'}
+                                {scored !== undefined && <> · реранкер {scored.toFixed(3)}</>}
+                                {kept >= 0 ? <> → [{kept + 1}]</> : ' · не вошёл (ниже порога или за top-K)'}
                               </li>
                             );
                           })}

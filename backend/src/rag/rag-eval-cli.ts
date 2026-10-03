@@ -16,10 +16,14 @@ import { SearchHit } from './rag.types';
 // - facts: how many of the key facts the answer contains (literal stems);
 // - judge: an LLM compares the answer with the expected one —
 //   correct / partial / wrong, and whether it invents facts;
-// - citations: does the answer cite [n] of a chunk holding the answer.
+// - citations: does the answer cite [n] of a chunk holding the answer;
+// - grounding (Day 24): does the answer come with sources and with quotes
+//   confirmed in the excerpts, and does an LLM — shown only the answer and
+//   the quotes — find the answer supported by them; "не знаю" answers and
+//   their reason (weak context / the model / unconfirmed quotes).
 //
 // npm run rag-eval --workspace=backend -- [--modes baseline,ce,llm] [--questions file.json]
-//   [--model deepseek-v4-flash] [--judge deepseek-v4-pro] [--only q1,n1] [--report ../docs/day23-rag-modes.md]
+//   [--model deepseek-v4-flash] [--judge deepseek-v4-pro] [--only q1,n1] [--title "…"] [--report ../docs/day24-grounded.md]
 
 interface ControlQuestion {
   id: string;
@@ -78,7 +82,11 @@ interface ModeResult {
   /** Same, among the first-stage candidates (before reranking/filtering). */
   candidateRank: number;
   citedSource: boolean;
+  /** RAG answers that were delivered (not "не знаю"): is the answer backed by its confirmed quotes. */
+  support?: Support;
 }
+
+type Support = 'supported' | 'partial' | 'unsupported';
 
 interface QuestionResult {
   q: ControlQuestion;
@@ -126,11 +134,34 @@ async function judge(q: ControlQuestion, answer: string, model: string): Promise
   }
 }
 
+/** Is the answer backed by the quotes alone? The checker sees no book and no expected answer. */
+async function checkSupport(answer: string, quotes: string[], model: string): Promise<Support> {
+  const prompt = [
+    'Проверь, следует ли ответ из цитат. Других знаний не используй — только цитаты.',
+    `Ответ: ${answer}`,
+    'Цитаты:',
+    ...quotes.map((q, i) => `${i + 1}. «${q}»`),
+    'Верни JSON {"support": "supported" | "partial" | "unsupported"}: supported — всё утверждаемое в ответе есть в цитатах; partial — часть утверждений цитатами не подтверждена; unsupported — цитаты ответ не подтверждают.',
+  ].join('\n');
+  const result = await callLlm(prompt, { format: 'json', temperature: 0, model }, 'rag-eval:support');
+  try {
+    const v = JSON.parse(result.content).support;
+    return ['supported', 'partial', 'unsupported'].includes(v) ? v : 'unsupported';
+  } catch {
+    return 'unsupported';
+  }
+}
+
 async function score(q: ControlQuestion, answer: RagAnswer, judgeModel: string): Promise<ModeResult> {
   const text = norm(answer.answer);
   // A key fact may list alternative spellings: "сорок тысяч|40 000".
   const facts = q.mustInclude.filter((f) => f.split('|').some((alt) => text.includes(norm(alt)))).length;
-  const judgement = await judge(q, answer.answer, judgeModel);
+  const g = answer.grounding;
+  const confirmedQuotes = g?.quotes.filter((x) => x.match !== 'not-found').map((x) => x.text) ?? [];
+  const [judgement, support] = await Promise.all([
+    judge(q, answer.answer, judgeModel),
+    g?.status === 'answered' && confirmedQuotes.length ? checkSupport(g.answer, confirmedQuotes, judgeModel) : undefined,
+  ]);
   const isSource = holdsAnswer(q);
   const cited = [...new Set([...answer.answer.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])))].filter(
     (n) => n >= 1 && n <= answer.hits.length,
@@ -142,21 +173,29 @@ async function score(q: ControlQuestion, answer: RagAnswer, judgeModel: string):
     sourceRank: firstRank(answer.hits, isSource),
     candidateRank: firstRank(answer.pipeline?.candidates ?? [], isSource),
     citedSource: cited.some((n) => isSource(answer.hits[n - 1])),
+    support,
   };
 }
 
 const VERDICT_MARK: Record<Verdict, string> = { correct: '✅', partial: '🟡', wrong: '❌' };
+const SUPPORT_MARK: Record<Support, string> = { supported: '✔', partial: '½', unsupported: '✘' };
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
-function renderReport(set: QuestionSet, modes: Mode[], results: QuestionResult[], cfg: { model: string; judge: string }): string {
+function renderReport(
+  set: QuestionSet,
+  modes: Mode[],
+  results: QuestionResult[],
+  cfg: { model: string; judge: string },
+  title: string,
+): string {
   const positive = results.filter((r) => !r.q.negative);
   const negative = results.filter((r) => r.q.negative);
   const totalFacts = positive.reduce((a, r) => a + r.q.mustInclude.length, 0);
   const of = (rs: QuestionResult[], id: string, f: (m: ModeResult) => boolean) => rs.filter((r) => f(r.modes[id])).length;
 
   const lines: string[] = [
-    '# RAG: режимы поиска — фильтрация, реранкинг, query rewrite',
+    `# ${title}`,
     '',
     `Документ: ${set.document}. Модель ответов: \`${cfg.model}\`, судья: \`${cfg.judge}\`. ` +
       `Поиск — гибридный (векторы + BM25), чанкинг по структуре. ${positive.length} контрольных вопросов с ответом в книге ` +
@@ -191,6 +230,30 @@ function renderReport(set: QuestionSet, modes: Mode[], results: QuestionResult[]
         return `| ${m.id} | ${of(positive, m.id, (x) => x.sourceRank > 0)} | ${of(positive, m.id, (x) => x.sourceRank === 1)} | ${of(positive, m.id, (x) => x.citedSource)} | ${before.toFixed(1)} → ${after.toFixed(1)} | ${avg(all.map((x) => x.answer.pipeline?.filteredOut ?? 0)).toFixed(1)} | ${of(negative, m.id, (x) => x.answer.hits.length === 0)} | ${Math.round(avg(all.map((x) => x.answer.usage?.totalTokens ?? 0)))} | ${(avg(all.map((x) => x.answer.durationMs)) / 1000).toFixed(1)} с |`;
       }),
     '',
+    '## Источники, цитаты, «не знаю»',
+    '',
+    'Ответ с RAG обязан содержать источники (source + section + chunk_id из реально найденных чанков) и цитаты; каждая цитата ищется в тексте чанка, на который ссылается. ' +
+      'Ответ без подтверждённой цитаты не выдаётся — вместо него «не знаю» с просьбой уточнить; при слабом контексте (ничего выше порога) LLM не вызывается. ' +
+      '«Смысл совпадает с цитатами» — отдельная проверка LLM, которой показаны только ответ и цитаты.',
+    '',
+    `| Режим | Дан ответ | …с источниками | …с цитатами | Цитат подтверждено | Смысл совпадает с цитатами | «Не знаю» на вопросах с ответом | «Не знаю» на вопросах без ответа (из ${negative.length}) |`,
+    '|---|---|---|---|---|---|---|---|',
+    ...modes
+      .filter((m) => m.pipeline)
+      .map((m) => {
+        const all = results.map((r) => r.modes[m.id]);
+        const answered = all.filter((x) => x.answer.grounding?.status === 'answered');
+        const quotes = all.flatMap((x) => (x.answer.grounding?.status === 'answered' ? x.answer.grounding.quotes : []));
+        const confirmed = quotes.filter((x) => x.match !== 'not-found').length;
+        const unknownPositive = positive.map((r) => r.modes[m.id].answer.grounding).filter((g) => g?.status === 'unknown');
+        const reasons = ['low-relevance', 'model', 'unverified']
+          .map((reason) => [reason, unknownPositive.filter((g) => g!.reason === reason).length] as const)
+          .filter(([, n]) => n)
+          .map(([reason, n]) => `${reason}: ${n}`)
+          .join(', ');
+        return `| ${m.id} | ${answered.length}/${all.length} | ${answered.filter((x) => x.answer.grounding!.sources.length).length}/${answered.length} | ${answered.filter((x) => x.answer.grounding!.quotes.some((y) => y.match !== 'not-found')).length}/${answered.length} | ${confirmed}/${quotes.length} (точно ${quotes.filter((x) => x.match === 'exact').length}) | ${answered.filter((x) => x.support === 'supported').length} да, ${answered.filter((x) => x.support === 'partial').length} частично, ${answered.filter((x) => x.support === 'unsupported').length} нет | ${unknownPositive.length}${reasons ? ` (${reasons})` : ''} | ${of(negative, m.id, (x) => x.answer.grounding?.status === 'unknown')} |`;
+      }),
+    '',
     '## По вопросам',
     '',
     `| # | Вопрос | ${modes.map((m) => m.id).join(' | ')} |`,
@@ -199,12 +262,14 @@ function renderReport(set: QuestionSet, modes: Mode[], results: QuestionResult[]
       const cells = modes.map((m) => {
         const x = r.modes[m.id];
         const rank = m.pipeline ? (r.q.negative ? ` · ${x.answer.hits.length} фр.` : ` · ${x.sourceRank || '—'}`) : '';
-        return `${VERDICT_MARK[x.judgement.verdict]}${rank}`;
+        const g = x.answer.grounding;
+        const grounded = !g ? '' : g.status === 'unknown' ? ' · не знаю' : ` · цит. ${g.quotes.filter((y) => y.match !== 'not-found').length}/${g.quotes.length}${x.support ? ` ${SUPPORT_MARK[x.support]}` : ''}`;
+        return `${VERDICT_MARK[x.judgement.verdict]}${rank}${grounded}`;
       });
       return `| ${r.q.id} | ${r.q.question} | ${cells.join(' | ')} |`;
     }),
     '',
-    'В ячейке: вердикт судьи · ранг фрагмента с ответом в контексте LLM (— нет в контексте); для вопросов без ответа — сколько фрагментов прошло фильтр.',
+    'В ячейке: вердикт судьи · ранг фрагмента с ответом в контексте LLM (— нет в контексте; для вопросов без ответа — сколько фрагментов прошло фильтр) · подтверждённых цитат из приведённых и согласие ответа с ними (✔ да, ½ частично, ✘ нет) или «не знаю».',
     '',
     '## Вопросы и ответы',
   ];
@@ -227,8 +292,19 @@ function renderReport(set: QuestionSet, modes: Mode[], results: QuestionResult[]
           (r.q.mustInclude.length ? `, факты ${x.facts}/${r.q.mustInclude.length}` : '') +
           `${retrieval}. Судья: ${x.judgement.comment}`,
         '',
-        `> ${oneLine(x.answer.answer)}`,
+        ...x.answer.answer.split('\n').map((l) => `> ${l}`),
       );
+      const g = x.answer.grounding;
+      const bad = g?.quotes.filter((y) => y.match === 'not-found') ?? [];
+      if (g?.status === 'answered' || bad.length) {
+        lines.push(
+          '',
+          `Проверка: источников ${g!.sources.length}, цитат подтверждено ${g!.quotes.length - bad.length}/${g!.quotes.length}` +
+            (x.support ? `, смысл ответа и цитат: ${x.support}` : '') +
+            (bad.length ? `; не найдены в тексте: ${bad.map((y) => `[${y.n}] «${y.text}»`).join('; ')}` : '') +
+            (g!.rejectedAnswer ? `; отклонённый ответ модели: «${oneLine(g!.rejectedAnswer)}»` : ''),
+        );
+      }
     }
   }
   return lines.join('\n') + '\n';
@@ -272,7 +348,8 @@ async function main() {
     );
   }
 
-  const report = renderReport(set, modes, results, { model, judge: judgeModel });
+  const title = flag(args, 'title') ?? 'RAG: режимы поиска, источники и цитаты';
+  const report = renderReport(set, modes, results, { model, judge: judgeModel }, title);
   const out = flag(args, 'report');
   if (out) {
     const target = path.resolve(process.cwd(), out);

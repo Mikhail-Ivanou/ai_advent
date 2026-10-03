@@ -1,3 +1,5 @@
+import { GROUNDED_FORMAT_INSTRUCTIONS } from '../rag/grounding';
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -65,10 +67,8 @@ export interface AskOptions {
   taskState?: string;
   /** Hard invariants — architecture/decisions/stack/business rules the assistant must never propose violating (see Day 14). Formatted text, or undefined if none are active. */
   invariants?: string;
-  /** Excerpts retrieved from the indexed documents for this question, numbered [1]..[n] (Day 21). */
+  /** Excerpts retrieved from the indexed documents for this question, numbered [1]..[n] (Day 21); the answer must quote them (Day 24). */
   ragContext?: string;
-  /** RAG was on, but no excerpt passed the relevance filter (Day 23). */
-  ragNoResults?: boolean;
   /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
   tools?: LlmToolset;
 }
@@ -232,23 +232,16 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
         ]
       : []),
     // Right before the dialog: retrieved for this very question, so it's the
-    // most specific context of all.
+    // most specific context of all. Day 24: the answer must come with
+    // sources and verbatim quotes, which the caller then verifies.
     ...(options.ragContext
       ? [
           {
             role: 'system',
-            content: `Excerpts retrieved from the user's indexed documents (RAG) as relevant to the question below, most relevant first. Treat them as the primary source: when they cover the question, answer from them and cite the excerpts you used as [n]. If they don't contain the answer, say so explicitly and only then answer from general knowledge, marking that part as not from the documents. Do not invent citations.\n\n${options.ragContext}`,
+            content: `Excerpts retrieved from the user's indexed documents (RAG) as relevant to the question below, numbered [n], most relevant first.\n${GROUNDED_FORMAT_INSTRUCTIONS}\n\n${options.ragContext}`,
           },
         ]
-      : options.ragNoResults
-        ? [
-            {
-              role: 'system',
-              content:
-                "The search over the user's indexed documents (RAG) found no excerpts relevant to the question below. Say plainly that the documents don't contain the answer. If you add anything from general knowledge, mark it clearly as not from the documents, and never present it as if it came from them.",
-            },
-          ]
-        : []),
+      : []),
     ...(options.history ?? []),
     { role: 'user', content: prompt },
   ];

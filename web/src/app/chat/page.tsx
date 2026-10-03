@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { Grounding, GroundingView } from '@/components/GroundingView';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 
 type Usage = {
@@ -358,6 +359,7 @@ type RagInfo = {
   rewritten?: string;
   candidates?: number;
   filteredOut?: number;
+  grounding?: Grounding;
   hits: { chunk_id: string; score: number; rerankScore?: number; title: string; file: string; source: string; section: string; text: string }[];
 };
 
@@ -1812,6 +1814,7 @@ export default function ChatPage() {
               >
                 {message.content}
               </p>
+              {message.meta?.rag?.grounding && <GroundingView grounding={message.meta.rag.grounding} />}
               {message.meta?.rag && (
                 <details className="mt-1 rounded-md border border-black/10 bg-white px-2 py-1 text-xs">
                   <summary className="cursor-pointer text-[#5c5c5c]">

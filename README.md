@@ -139,6 +139,33 @@ npm run rag-eval --workspace=backend -- --report ../docs/day23-rag-modes.md
 
 Result: [docs/day23-rag-modes.md](docs/day23-rag-modes.md).
 
+## Day 24 — sources, quotes, "не знаю"
+
+With RAG the model must reply as `ОТВЕТ / ИСТОЧНИКИ / ЦИТАТЫ` (verbatim
+fragments of the excerpts it got) or `НЕ ЗНАЮ: <what to clarify>`.
+`backend/src/rag/grounding.ts` checks the reply against the excerpts:
+
+- sources are resolved from `[n]` to the real chunks (source, section,
+  chunk_id) — an excerpt only listed, with nothing quoted or cited from it,
+  is dropped;
+- each quote is looked up in its excerpt: exact, approximate (≥ 85% of its
+  words in order) or not found; a quote attributed to the wrong excerpt is
+  re-attributed;
+- **no confirmed quote → no answer**: "Не знаю" with a request to clarify
+  (the rejected answer is kept for inspection);
+- **weak context** (nothing above the relevance threshold) → "Не знаю",
+  the best relevance vs the threshold, the nearest sections, and a request
+  to clarify — without calling the LLM.
+
+The chat and `/rag` show sources, quotes with ✓ / ≈ / ✗ and the reason for
+"не знаю". The evaluation adds: answers with sources, with quotes, confirmed
+quotes, and whether an LLM shown only the answer and the quotes finds the
+answer supported by them:
+
+```bash
+npm run rag-eval --workspace=backend -- --modes baseline,ce,llm --report ../docs/day24-grounded.md
+```
+
 ## Next steps
 
 - [ ] Drop in the actual challenge repo(s) mentioned separately
