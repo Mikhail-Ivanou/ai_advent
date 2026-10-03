@@ -1499,12 +1499,20 @@ export default function ChatPage() {
       <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-hidden">
         <div className="shrink-0 flex items-center justify-between">
           <h1 className="truncate text-2xl font-medium">{chatTitle(activeChat)}</h1>
-          <Link
-            href="/rag"
-            className="shrink-0 rounded-md border border-black/10 bg-white px-3 py-1 text-sm hover:border-pine hover:text-pine"
-          >
-            RAG: документы →
-          </Link>
+          <div className="flex shrink-0 gap-2">
+            <Link
+              href="/rag"
+              className="rounded-md border border-black/10 bg-white px-3 py-1 text-sm hover:border-pine hover:text-pine"
+            >
+              RAG: документы →
+            </Link>
+            <Link
+              href="/rag-chat"
+              className="rounded-md border border-black/10 bg-white px-3 py-1 text-sm hover:border-pine hover:text-pine"
+            >
+              Мини-чат RAG →
+            </Link>
+          </div>
         </div>
 
         <section className="shrink-0 rounded-lg border border-black/10 bg-white text-sm">

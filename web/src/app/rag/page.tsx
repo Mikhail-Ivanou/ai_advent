@@ -366,9 +366,14 @@ export default function RagPage() {
               )}
             </p>
           </div>
-          <Link href="/chat" className="text-pine underline">
-            ← к чату
-          </Link>
+          <span className="flex gap-3">
+            <Link href="/rag-chat" className="text-pine underline">
+              мини-чат с RAG →
+            </Link>
+            <Link href="/chat" className="text-pine underline">
+              ← к чату
+            </Link>
+          </span>
         </header>
 
         {error && <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-red-700">{error}</div>}

@@ -166,6 +166,32 @@ answer supported by them:
 npm run rag-eval --workspace=backend -- --modes baseline,ce,llm --report ../docs/day24-grounded.md
 ```
 
+## Day 25 — mini chat with RAG and task memory
+
+http://localhost:3000/rag-chat (backend: `src/rag-chat`, `POST /rag-chat/:id/messages`).
+Dialogs are kept in `backend/data/rag-chats.json`. Every message:
+
+1. **Task memory + standalone query** — one LLM call updates the dialog's
+   task memory (goal; what the user clarified; constraints; terms) and turns
+   a follow-up ("а кто ещё погиб там?") into a self-contained search query;
+   it also tells what kind of message it is:
+   - `search` — a question about the documents;
+   - `note` — only a clarification / constraint / term: recorded in memory,
+     confirmed, nothing searched;
+   - `dialog` — about the dialog itself ("подведи итог", "напомни цель"):
+     answered from memory and history, citing the sources gathered so far.
+2. **Retrieval** with that query (hybrid → cross-encoder → threshold 0.2).
+3. **Answer** with the memory and recent history in the prompt, in the Day 24
+   format — sources and verified quotes; weak context → "не знаю".
+
+The memory panel shows the goal / clarified / constraints / terms after each
+message and can be edited. Two long scripted dialogs (13 and 12 messages)
+check that sources keep coming and the goal is not lost:
+
+```bash
+npm run rag-chat-check --workspace=backend -- --report ../docs/day25-rag-chat.md
+```
+
 ## Next steps
 
 - [ ] Drop in the actual challenge repo(s) mentioned separately

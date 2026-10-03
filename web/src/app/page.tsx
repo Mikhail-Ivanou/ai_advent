@@ -26,6 +26,9 @@ export default function Home() {
       <Link href="/rag" className="text-pine underline">
         Document indexing →
       </Link>
+      <Link href="/rag-chat" className="text-pine underline">
+        Mini chat with RAG + task memory →
+      </Link>
     </main>
   );
 }

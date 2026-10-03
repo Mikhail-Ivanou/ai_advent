@@ -14,7 +14,8 @@
     "reasoning-demo": "ts-node -r tsconfig-paths/register src/llm/reasoning-demo-cli.ts",
     "orchestration-check": "ts-node -r tsconfig-paths/register src/llm/orchestration-check-cli.ts",
     "rag": "ts-node -r tsconfig-paths/register src/rag/rag-cli.ts",
-    "rag-eval": "ts-node -r tsconfig-paths/register src/rag/rag-eval-cli.ts"
+    "rag-eval": "ts-node -r tsconfig-paths/register src/rag/rag-eval-cli.ts",
+    "rag-chat-check": "ts-node -r tsconfig-paths/register src/rag-chat/scenario-check-cli.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

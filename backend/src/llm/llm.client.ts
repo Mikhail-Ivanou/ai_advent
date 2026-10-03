@@ -65,6 +65,8 @@ export interface AskOptions {
   profile?: string;
   /** Formalized task state — stage/step/expected action (see Day 13). Formatted text, or undefined if no task is active. */
   taskState?: string;
+  /** Task memory of a RAG dialog (Day 25): its goal, what the user clarified, fixed constraints and terms. Formatted text. */
+  dialogMemory?: string;
   /** Hard invariants — architecture/decisions/stack/business rules the assistant must never propose violating (see Day 14). Formatted text, or undefined if none are active. */
   invariants?: string;
   /** Excerpts retrieved from the indexed documents for this question, numbered [1]..[n] (Day 21); the answer must quote them (Day 24). */
@@ -212,6 +214,14 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
           {
             role: 'system',
             content: `Summary of the earlier part of this conversation (older messages were dropped to save context — treat this as ground truth for what was said before): ${options.summary}`,
+          },
+        ]
+      : []),
+    ...(options.dialogMemory
+      ? [
+          {
+            role: 'system',
+            content: `Task memory of this dialog — keep to its goal, respect every constraint, use the terms as defined, and do not ask again about what is already clarified. If the new message is a follow-up ("а он…", "там"), read it in the light of this memory and the dialog above:\n${options.dialogMemory}`,
           },
         ]
       : []),

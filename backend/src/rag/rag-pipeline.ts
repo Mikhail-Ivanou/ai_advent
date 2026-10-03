@@ -121,7 +121,17 @@ function fuse(rankings: SearchHit[][], limit: number): RankedHit[] {
     .map((e, i) => ({ ...e.hit, firstRank: i + 1 }));
 }
 
-export async function runPipeline(rag: RagService, question: string, input: Partial<PipelineConfig> = {}): Promise<PipelineResult> {
+/**
+ * `alsoSearch`: more phrasings of the same question searched alongside it and
+ * fused by rank (Day 25: the chat's raw message next to the standalone query
+ * built from the dialog). The reranker still judges against `question`.
+ */
+export async function runPipeline(
+  rag: RagService,
+  question: string,
+  input: Partial<PipelineConfig> = {},
+  alsoSearch: string[] = [],
+): Promise<PipelineResult> {
   const cfg = normalizePipeline(input);
   const requests: LlmRequestLog[] = [];
   const timings = { rewriteMs: 0, searchMs: 0, rerankMs: 0 };
@@ -138,7 +148,7 @@ export async function runPipeline(rag: RagService, question: string, input: Part
   }
 
   const searchStarted = Date.now();
-  const queries = rewritten && rewritten !== question ? [question, rewritten] : [question];
+  const queries = [...new Set([question, ...(rewritten ? [rewritten] : []), ...alsoSearch.map((q) => q.trim()).filter(Boolean)])];
   const rankings = await Promise.all(queries.map((q) => rag.retrieve(q, cfg.strategy, cfg.candidates, cfg.search)));
   const found = queries.length > 1 ? fuse(rankings, cfg.candidates) : rankings[0].map((h, i) => ({ ...h, firstRank: i + 1 }));
   timings.searchMs = Date.now() - searchStarted;
