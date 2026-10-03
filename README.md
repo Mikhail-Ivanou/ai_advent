@@ -104,10 +104,40 @@ over the indexed book with the expected answer, key facts and source chapter
 (retrieval rank of the source passage, key facts, LLM judge, citations):
 
 ```bash
-npm run rag-eval --workspace=backend -- --strategy structural --search hybrid --k 5 --report ../docs/day22-rag-eval.md
+npm run rag-eval --workspace=backend -- --modes baseline --report ../docs/day22-rag-eval.md
 ```
 
 Result: [docs/day22-rag-eval.md](docs/day22-rag-eval.md).
+
+## Day 23 — reranking, filtering, query rewrite
+
+Retrieval is a pipeline (`backend/src/rag/rag-pipeline.ts`):
+
+```
+question → [query rewrite] → candidates (top-K before) → [rerank] → [threshold] → top-K after → LLM
+```
+
+- **Query rewrite**: the LLM turns the question into a search query (filler
+  dropped, names kept, words likely near the answer added); the original and
+  the rewrite are both searched and the rankings fused (RRF).
+- **Rerankers** (`reranker.ts`): `cross-encoder` — local multilingual
+  `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (ONNX int8, ~120 MB, downloaded
+  once into `data/rag/models`), reads question + chunk together, 0..1;
+  `llm` — the chat model rates all candidates 0–10 in one call.
+- **Threshold** on the reranker's score (or cosine without one); thresholds
+  calibrated on the book: cross-encoder 0.2, LLM 0.6. When nothing passes,
+  the model is told the documents have no answer instead of answering from
+  memory.
+
+Settings are in the chat's RAG panel and on `/rag` (both answers side by side,
+candidates before / after filtering). Comparison of modes over the control
+questions (10 with an answer in the book + 3 without):
+
+```bash
+npm run rag-eval --workspace=backend -- --report ../docs/day23-rag-modes.md
+```
+
+Result: [docs/day23-rag-modes.md](docs/day23-rag-modes.md).
 
 ## Next steps
 

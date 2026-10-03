@@ -384,7 +384,8 @@ export class RagService {
     this.sync();
     if (!this.indexes.get(strategy)?.chunks.length || !query.trim()) return [];
     const [{ vector }] = await embed([query.trim()], 'query');
-    return this.rankBy(mode, strategy, query.trim(), vector, Math.min(Math.max(1, k), 20));
+    // Up to 50: a reranker needs a wider candidate pool than what finally goes to the LLM.
+    return this.rankBy(mode, strategy, query.trim(), vector, Math.min(Math.max(1, k), 50));
   }
 
   private stats(strategy: ChunkingStrategy): StrategyStats | undefined {

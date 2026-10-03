@@ -1,6 +1,7 @@
 import { BadGatewayException, BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { CHUNKING_STRATEGIES, ChunkingParams, ChunkingStrategy } from './rag.types';
 import { answerQuestion } from './rag-answer';
+import { PipelineConfig } from './rag-pipeline';
 import { RagService } from './rag.service';
 
 /** Document indexing (Day 21): add documents by URL or upload, inspect chunks, search, compare strategies. */
@@ -57,20 +58,17 @@ export class RagController {
   /**
    * The same question answered by the LLM twice — without RAG and with the
    * retrieved chunks joined to it (Day 22), for a side-by-side comparison.
+   * Body: question + pipeline settings (strategy, search, rewrite, rerank,
+   * candidates, k, minScore, model — Day 23).
    */
   @Post('ask')
-  async ask(@Body() body: { question: string; strategy?: string; k?: number; search?: string; model?: string }) {
+  async ask(@Body() body: { question: string } & Partial<PipelineConfig>) {
     if (!body.question?.trim()) throw new BadRequestException('question is required');
-    const options = {
-      strategy: (body.strategy === 'fixed' ? 'fixed' : 'structural') as ChunkingStrategy,
-      k: body.k,
-      search: (body.search === 'vector' ? 'vector' : 'hybrid') as 'vector' | 'hybrid',
-      model: body.model,
-    };
+    const { question, ...pipeline } = body;
     try {
       const [plain, rag] = await Promise.all([
-        answerQuestion(this.ragService, body.question.trim(), 'plain', options),
-        answerQuestion(this.ragService, body.question.trim(), 'rag', options),
+        answerQuestion(this.ragService, question.trim(), 'plain', { model: pipeline.model }),
+        answerQuestion(this.ragService, question.trim(), 'rag', pipeline),
       ]);
       return { plain, rag };
     } catch (error) {

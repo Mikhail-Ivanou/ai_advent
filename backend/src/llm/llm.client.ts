@@ -67,6 +67,8 @@ export interface AskOptions {
   invariants?: string;
   /** Excerpts retrieved from the indexed documents for this question, numbered [1]..[n] (Day 21). */
   ragContext?: string;
+  /** RAG was on, but no excerpt passed the relevance filter (Day 23). */
+  ragNoResults?: boolean;
   /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
   tools?: LlmToolset;
 }
@@ -238,7 +240,15 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
             content: `Excerpts retrieved from the user's indexed documents (RAG) as relevant to the question below, most relevant first. Treat them as the primary source: when they cover the question, answer from them and cite the excerpts you used as [n]. If they don't contain the answer, say so explicitly and only then answer from general knowledge, marking that part as not from the documents. Do not invent citations.\n\n${options.ragContext}`,
           },
         ]
-      : []),
+      : options.ragNoResults
+        ? [
+            {
+              role: 'system',
+              content:
+                "The search over the user's indexed documents (RAG) found no excerpts relevant to the question below. Say plainly that the documents don't contain the answer. If you add anything from general knowledge, mark it clearly as not from the documents, and never present it as if it came from them.",
+            },
+          ]
+        : []),
     ...(options.history ?? []),
     { role: 'user', content: prompt },
   ];
@@ -382,7 +392,7 @@ function parseUsage(raw: any): LlmUsage | undefined {
     : undefined;
 }
 
-function sumUsage(a?: LlmUsage, b?: LlmUsage): LlmUsage | undefined {
+export function sumUsage(a?: LlmUsage, b?: LlmUsage): LlmUsage | undefined {
   if (!a && !b) return undefined;
   return {
     promptTokens: (a?.promptTokens ?? 0) + (b?.promptTokens ?? 0),

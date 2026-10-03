@@ -342,12 +342,23 @@ type Message = {
 type RagStrategy = 'fixed' | 'structural';
 
 type RagSearchMode = 'hybrid' | 'vector';
+type RagRerank = 'none' | 'cross-encoder' | 'llm';
+
+// Day 23: the threshold's scale depends on the reranker — cosine without
+// one, 0..1 relevance with one — so switching reranker resets it to a value
+// calibrated on the indexed book.
+const RAG_RERANK_THRESHOLDS: Record<RagRerank, string> = { none: '0', 'cross-encoder': '0.2', llm: '0.6' };
 
 type RagInfo = {
   strategy: RagStrategy;
   k: number;
   search?: RagSearchMode;
-  hits: { chunk_id: string; score: number; title: string; file: string; source: string; section: string; text: string }[];
+  rerank?: RagRerank;
+  minScore?: number;
+  rewritten?: string;
+  candidates?: number;
+  filteredOut?: number;
+  hits: { chunk_id: string; score: number; rerankScore?: number; title: string; file: string; source: string; section: string; text: string }[];
 };
 
 type RagIndexSummary = { documents: number; chunks: Record<RagStrategy, number> };
@@ -376,6 +387,10 @@ type ChatSettings = {
   ragStrategy: RagStrategy;
   ragTopK: string;
   ragSearch: RagSearchMode;
+  ragRewrite: boolean;
+  ragRerank: RagRerank;
+  ragCandidates: string;
+  ragMinScore: string;
 };
 
 type Chat = {
@@ -443,6 +458,10 @@ function defaultSettings(): ChatSettings {
     ragStrategy: 'structural',
     ragTopK: '5',
     ragSearch: 'hybrid',
+    ragRewrite: false,
+    ragRerank: 'cross-encoder',
+    ragCandidates: '20',
+    ragMinScore: RAG_RERANK_THRESHOLDS['cross-encoder'],
   };
 }
 
@@ -1306,6 +1325,10 @@ export default function ChatPage() {
             strategy: settings.ragStrategy,
             k: parseInt(settings.ragTopK, 10) || 5,
             search: settings.ragSearch,
+            rewrite: settings.ragRewrite,
+            rerank: settings.ragRerank,
+            candidates: parseInt(settings.ragCandidates, 10) || 20,
+            minScore: parseFloat(settings.ragMinScore) || 0,
           },
         }),
       });
@@ -1796,15 +1819,37 @@ export default function ChatPage() {
                     {message.meta.rag.search ? `, ${message.meta.rag.search}` : ''}, top-{message.meta.rag.k}):{' '}
                     {message.meta.rag.hits.length
                       ? `${message.meta.rag.hits.length} фрагм. из ${new Set(message.meta.rag.hits.map((h) => h.source)).size} док.`
-                      : 'ничего не найдено — индекс пуст'}
+                      : message.meta.rag.candidates
+                        ? 'все фрагменты отсечены порогом — модели сказано, что в документах ответа нет'
+                        : 'ничего не найдено — индекс пуст'}
+                    {message.meta.rag.candidates !== undefined && (
+                      <>
+                        {' '}
+                        · кандидатов {message.meta.rag.candidates}
+                        {message.meta.rag.rerank && message.meta.rag.rerank !== 'none' && <>, реранкер {message.meta.rag.rerank}</>}
+                        {!!message.meta.rag.filteredOut && <>, отсечено порогом {message.meta.rag.minScore}: {message.meta.rag.filteredOut}</>}
+                      </>
+                    )}
                   </summary>
+                  {message.meta.rag.rewritten && (
+                    <p className="mt-1 text-[11px] text-[#5c5c5c]">
+                      Запрос после rewrite: <span className="text-ink">«{message.meta.rag.rewritten}»</span>
+                    </p>
+                  )}
                   <ol className="mt-1 flex flex-col gap-1">
                     {message.meta.rag.hits.map((hit, hitIndex) => (
                       <li key={hit.chunk_id}>
                         <details>
                           <summary className="cursor-pointer">
                             <span className="font-mono">[{hitIndex + 1}]</span>{' '}
-                            <span className="text-pine">{hit.score.toFixed(3)}</span> · {hit.title}
+                            <span className="text-pine" title="cosine">{hit.score.toFixed(3)}</span>
+                            {hit.rerankScore !== undefined && (
+                              <span className="text-pine" title="оценка реранкера">
+                                {' '}
+                                / {hit.rerankScore.toFixed(3)}
+                              </span>
+                            )}{' '}
+                            · {hit.title}
                             {hit.section && <> › {hit.section}</>}
                           </summary>
                           <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap text-[11px] text-ink">{hit.text}</p>
@@ -2148,6 +2193,63 @@ export default function ChatPage() {
                 disabled={!settings.useRag}
                 onChange={(event) => updateSettings(activeChat.id, { ragTopK: event.target.value })}
                 className="w-12 rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
+              />
+            </label>
+          </div>
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1" title="LLM переписывает вопрос в поисковый запрос; ищется по обоим">
+              <input
+                type="checkbox"
+                checked={settings.ragRewrite}
+                disabled={!settings.useRag}
+                onChange={(event) => updateSettings(activeChat.id, { ragRewrite: event.target.checked })}
+              />
+              rewrite
+            </label>
+            <label className="flex items-center gap-1">
+              реранкер
+              <select
+                value={settings.ragRerank}
+                disabled={!settings.useRag}
+                onChange={(event) => {
+                  const rerank = event.target.value as RagRerank;
+                  updateSettings(activeChat.id, { ragRerank: rerank, ragMinScore: RAG_RERANK_THRESHOLDS[rerank] });
+                }}
+                className="rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
+              >
+                <option value="cross-encoder">cross-encoder</option>
+                <option value="llm">LLM</option>
+                <option value="none">нет</option>
+              </select>
+            </label>
+            {settings.ragRerank !== 'none' && (
+              <label className="flex items-center gap-1" title="top-K до фильтрации: сколько кандидатов взять из поиска">
+                кандидатов
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={settings.ragCandidates}
+                  disabled={!settings.useRag}
+                  onChange={(event) => updateSettings(activeChat.id, { ragCandidates: event.target.value })}
+                  className="w-12 rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
+                />
+              </label>
+            )}
+            <label
+              className="flex items-center gap-1"
+              title={settings.ragRerank === 'none' ? 'порог по cosine-похожести, 0 — выкл.' : 'порог по оценке реранкера 0..1, 0 — выкл.'}
+            >
+              порог
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.ragMinScore}
+                disabled={!settings.useRag}
+                onChange={(event) => updateSettings(activeChat.id, { ragMinScore: event.target.value })}
+                className="w-14 rounded border border-black/10 px-1 py-0.5 disabled:opacity-50"
               />
             </label>
           </div>

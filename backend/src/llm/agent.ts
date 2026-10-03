@@ -120,14 +120,29 @@ export interface RagConfig {
   k?: number;
   /** "hybrid" (embeddings + BM25, default) or "vector" (embeddings only) — Day 22. */
   search?: 'vector' | 'hybrid';
+  /** Day 23: rewrite the question into a search query with the LLM before searching. */
+  rewrite?: boolean;
+  /** Day 23: second stage — rerank the candidates. Default "none". */
+  rerank?: 'none' | 'cross-encoder' | 'llm';
+  /** Day 23: candidates taken from the search before reranking/filtering (top-K before). Default 20 with a reranker. */
+  candidates?: number;
+  /** Day 23: relevance threshold 0..1 (reranker score, or cosine without a reranker); 0 = off. */
+  minScore?: number;
 }
 
 export interface RagInfo {
   strategy: 'fixed' | 'structural';
   k: number;
   search: 'vector' | 'hybrid';
+  rerank: 'none' | 'cross-encoder' | 'llm';
+  minScore: number;
+  /** The search query the question was rewritten into, when rewriting was on. */
+  rewritten?: string;
+  /** Candidates found before reranking/filtering, and how many the threshold dropped. */
+  candidates: number;
+  filteredOut: number;
   /** Chunks put into the prompt, in citation order ([1] is the first). */
-  hits: { chunk_id: string; score: number; title: string; file: string; source: string; section: string; text: string }[];
+  hits: { chunk_id: string; score: number; rerankScore?: number; title: string; file: string; source: string; section: string; text: string }[];
 }
 
 export interface InvariantConfig {

@@ -8,7 +8,8 @@ import { MemoryService } from '../memory/memory.service';
 import { ProfileService } from '../profile/profile.service';
 import { InvariantService } from '../invariant/invariant.service';
 import { McpService } from '../mcp/mcp.service';
-import { formatRagContext, normalizeRagConfig } from '../rag/rag-answer';
+import { formatRagContext } from '../rag/rag-answer';
+import { normalizePipeline, runPipeline } from '../rag/rag-pipeline';
 import { RagService } from '../rag/rag.service';
 import { chatMeta } from '../mcp/mcp.types';
 
@@ -149,7 +150,7 @@ export class AgentsService implements OnModuleInit {
     const result = await agent.ask(
       prompt,
       reasoningMode,
-      { ...options, profile: profileText, tools, ragContext: rag?.context },
+      { ...options, profile: profileText, tools, ragContext: rag?.context, ragNoResults: !!rag && !rag.context },
       contextConfig,
       memoryConfig,
       longTermMemoryText,
@@ -181,17 +182,23 @@ export class AgentsService implements OnModuleInit {
    * can cite them and the user can check where an answer came from.
    */
   private async retrieve(prompt: string, config: RagConfig): Promise<{ context?: string; info: RagInfo }> {
-    const { strategy, k, search } = normalizeRagConfig(config);
-    const hits = await this.ragService.retrieve(prompt, strategy, k, search);
+    const cfg = normalizePipeline(config);
+    const result = await runPipeline(this.ragService, prompt, cfg);
     return {
-      context: formatRagContext(hits),
+      context: formatRagContext(result.hits),
       info: {
-        strategy,
-        k,
-        search,
-        hits: hits.map((h) => ({
+        strategy: cfg.strategy,
+        k: cfg.k,
+        search: cfg.search,
+        rerank: cfg.rerank,
+        minScore: cfg.minScore,
+        rewritten: result.rewritten,
+        candidates: result.candidates.length,
+        filteredOut: result.filteredOut,
+        hits: result.hits.map((h) => ({
           chunk_id: h.metadata.chunk_id,
           score: h.score,
+          rerankScore: h.rerankScore,
           title: h.metadata.title,
           file: h.metadata.file,
           source: h.metadata.source,

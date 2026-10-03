@@ -51,11 +51,23 @@ type SearchHit = { score: number; lexical?: number; metadata: ChunkMetadata; tex
 type SearchMode = 'hybrid' | 'vector';
 const SEARCH_LABELS: Record<SearchMode, string> = { hybrid: 'гибридный (векторы + BM25)', vector: 'только векторы' };
 
+type RankedHit = SearchHit & { firstRank: number; rerankScore?: number };
+type Rerank = 'none' | 'cross-encoder' | 'llm';
+// Thresholds calibrated on the indexed book (Day 23): the scale depends on the reranker.
+const RERANK_THRESHOLDS: Record<Rerank, number> = { none: 0, 'cross-encoder': 0.2, llm: 0.6 };
+const RERANK_LABELS: Record<Rerank, string> = { 'cross-encoder': 'cross-encoder (локально)', llm: 'LLM', none: 'нет' };
+
 type RagAnswer = {
   mode: 'rag' | 'plain';
   answer: string;
   model: string;
-  hits: SearchHit[];
+  hits: RankedHit[];
+  pipeline?: {
+    rewritten?: string;
+    candidates: RankedHit[];
+    filteredOut: number;
+    timings: { rewriteMs: number; searchMs: number; rerankMs: number };
+  };
   usage?: { totalTokens: number };
   costByn?: number;
   durationMs: number;
@@ -173,6 +185,10 @@ export default function RagPage() {
   const [askQuestion, setAskQuestion] = useState('');
   const [askStrategy, setAskStrategy] = useState<Strategy>('structural');
   const [askK, setAskK] = useState(5);
+  const [askRewrite, setAskRewrite] = useState(false);
+  const [askRerank, setAskRerank] = useState<Rerank>('cross-encoder');
+  const [askCandidates, setAskCandidates] = useState(20);
+  const [askMinScore, setAskMinScore] = useState(RERANK_THRESHOLDS['cross-encoder']);
   const [askResult, setAskResult] = useState<{ plain: RagAnswer; rag: RagAnswer } | null>(null);
   const [asking, setAsking] = useState(false);
 
@@ -304,7 +320,16 @@ export default function RagPage() {
       setAskResult(
         await api('/ask', {
           method: 'POST',
-          body: JSON.stringify({ question: askQuestion, strategy: askStrategy, k: askK, search: searchMode }),
+          body: JSON.stringify({
+            question: askQuestion,
+            strategy: askStrategy,
+            k: askK,
+            search: searchMode,
+            rewrite: askRewrite,
+            rerank: askRerank,
+            candidates: askCandidates,
+            minScore: askMinScore,
+          }),
         }),
       );
     } catch (e) {
@@ -703,14 +728,63 @@ export default function RagPage() {
                 </option>
               ))}
             </select>
-            <label className="text-[#5c5c5c]">
-              top-k{' '}
-              <input type="number" className={`${input} w-14`} value={askK} min={1} max={20} onChange={(e) => setAskK(Number(e.target.value))} />
-            </label>
             <button type="submit" className={button} disabled={asking || !askQuestion.trim()}>
               {asking ? 'Спрашиваю…' : 'Спросить'}
             </button>
           </form>
+          <div className="mb-2 flex flex-wrap items-center gap-3 text-[#5c5c5c]">
+            <label className="flex items-center gap-1" title="LLM переписывает вопрос в поисковый запрос; ищется по обоим, рейтинги сливаются">
+              <input type="checkbox" checked={askRewrite} onChange={(e) => setAskRewrite(e.target.checked)} />
+              query rewrite
+            </label>
+            <label className="flex items-center gap-1">
+              реранкер
+              <select
+                value={askRerank}
+                onChange={(e) => {
+                  const rerank = e.target.value as Rerank;
+                  setAskRerank(rerank);
+                  setAskMinScore(RERANK_THRESHOLDS[rerank]);
+                }}
+                className={input}
+              >
+                {(Object.keys(RERANK_LABELS) as Rerank[]).map((r) => (
+                  <option key={r} value={r}>
+                    {RERANK_LABELS[r]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {askRerank !== 'none' && (
+              <label title="сколько кандидатов взять из поиска до реранкинга и фильтра">
+                top-K до{' '}
+                <input
+                  type="number"
+                  className={`${input} w-14`}
+                  value={askCandidates}
+                  min={1}
+                  max={50}
+                  onChange={(e) => setAskCandidates(Number(e.target.value))}
+                />
+              </label>
+            )}
+            <label title="сколько фрагментов максимум уйдёт в LLM">
+              top-K после{' '}
+              <input type="number" className={`${input} w-14`} value={askK} min={1} max={20} onChange={(e) => setAskK(Number(e.target.value))} />
+            </label>
+            <label title={askRerank === 'none' ? 'порог по cosine, 0 — без фильтра' : 'порог по оценке реранкера 0..1, 0 — без фильтра'}>
+              порог{' '}
+              <input
+                type="number"
+                className={`${input} w-16`}
+                value={askMinScore}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(e) => setAskMinScore(Number(e.target.value))}
+              />
+            </label>
+          </div>
           <p className="mb-2 text-[11px] text-[#5c5c5c]">
             Один и тот же вопрос уходит в LLM дважды: как есть и вместе с найденными фрагментами ({SEARCH_LABELS[searchMode]} поиск,
             режим выбирается рядом с поиском выше). Контрольные вопросы с оценкой — <span className="font-mono">npm run rag-eval</span>.
@@ -725,6 +799,38 @@ export default function RagPage() {
                     {a.model} · {(a.durationMs / 1000).toFixed(1)} с{a.usage && <> · {a.usage.totalTokens} токенов</>}
                     {a.costByn !== undefined && <> · {a.costByn.toFixed(5)} BYN</>}
                   </p>
+                  {a.pipeline && (
+                    <div className="text-[11px] text-[#5c5c5c]">
+                      {a.pipeline.rewritten && (
+                        <p>
+                          Запрос после rewrite: <span className="text-ink">«{a.pipeline.rewritten}»</span>
+                        </p>
+                      )}
+                      <p>
+                        Кандидатов {a.pipeline.candidates.length} → в контексте {a.hits.length}
+                        {a.pipeline.filteredOut > 0 && <> (отсечено порогом: {a.pipeline.filteredOut})</>}
+                        {!a.hits.length && <> — модели сказано, что релевантных фрагментов нет</>} · поиск {a.pipeline.timings.searchMs} мс
+                        {a.pipeline.timings.rewriteMs > 0 && <>, rewrite {a.pipeline.timings.rewriteMs} мс</>}
+                        {a.pipeline.timings.rerankMs > 0 && <>, реранкинг {a.pipeline.timings.rerankMs} мс</>}
+                      </p>
+                      <details className="mt-1">
+                        <summary className="cursor-pointer">Все кандидаты до фильтра</summary>
+                        <ol className="mt-1 list-decimal pl-5">
+                          {a.pipeline.candidates.map((c) => {
+                            const kept = a.hits.findIndex((h) => h.metadata.chunk_id === c.metadata.chunk_id);
+                            const scored = a.hits[kept]?.rerankScore;
+                            return (
+                              <li key={c.metadata.chunk_id} className={kept >= 0 ? 'text-ink' : ''}>
+                                {c.metadata.section.split(' › ').pop()}
+                                {c.metadata.part && ` (ч. ${c.metadata.part})`} · cos {c.score.toFixed(3)}
+                                {kept >= 0 ? <> → [{kept + 1}]{scored !== undefined && <>, реранкер {scored.toFixed(3)}</>}</> : ' · не вошёл (ниже порога или за top-K)'}
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </details>
+                    </div>
+                  )}
                   {a.hits.length > 0 && (
                     <details className="text-xs">
                       <summary className="cursor-pointer text-[#5c5c5c]">Фрагменты в запросе ({a.hits.length})</summary>
@@ -732,7 +838,7 @@ export default function RagPage() {
                         {a.hits.map((h, i) => (
                           <div key={h.metadata.chunk_id}>
                             <span className="font-mono text-[11px]">[{i + 1}]</span>
-                            <ChunkCard metadata={h.metadata} text={h.text} score={h.score} />
+                            <ChunkCard metadata={h.metadata} text={h.text} score={h.rerankScore ?? h.score} />
                           </div>
                         ))}
                       </div>
