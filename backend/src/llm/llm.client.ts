@@ -120,9 +120,36 @@ const MODEL_PRICING_BYN_PER_1M: Record<string, { input: number; output: number }
 };
 
 export function estimateCostByn(model: string, usage?: LlmUsage): number | undefined {
+  if (usage && isLocalModel(model)) return 0;
   const pricing = MODEL_PRICING_BYN_PER_1M[model];
   if (!pricing || !usage) return undefined;
   return (usage.promptTokens / 1_000_000) * pricing.input + (usage.completionTokens / 1_000_000) * pricing.output;
+}
+
+/**
+ * Models served by a local LLM (Day 26) are addressed as "ollama/<name>",
+ * e.g. "ollama/qwen2.5:7b": the prefix routes the call to LOCAL_LLM_API_URL
+ * (Ollama's OpenAI-compatible endpoint) instead of the cloud provider, and is
+ * stripped before the request. No API key, no cost.
+ */
+const LOCAL_MODEL_PREFIX = 'ollama/';
+
+export function isLocalModel(model: string): boolean {
+  return model.startsWith(LOCAL_MODEL_PREFIX);
+}
+
+function resolveEndpoint(model: string): { baseUrl: string; apiKey?: string; apiModel: string } {
+  if (isLocalModel(model)) {
+    return {
+      baseUrl: process.env.LOCAL_LLM_API_URL ?? 'http://localhost:11434/v1',
+      apiModel: model.slice(LOCAL_MODEL_PREFIX.length),
+    };
+  }
+  return {
+    baseUrl: process.env.LLM_API_URL ?? 'https://api.openai.com/v1',
+    apiKey: process.env.LLM_API_KEY,
+    apiModel: model,
+  };
 }
 
 /**
@@ -133,12 +160,11 @@ export function estimateCostByn(model: string, usage?: LlmUsage): number | undef
  * "/chat/completions" is appended automatically.
  */
 export async function callLlm(prompt: string, options: AskOptions = {}, label = 'direct'): Promise<LlmResult> {
-  const baseUrl = (process.env.LLM_API_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
-  const apiUrl = `${baseUrl}/chat/completions`;
-  const apiKey = process.env.LLM_API_KEY;
   const model = options.model ?? process.env.LLM_MODEL ?? 'gpt-4o-mini';
+  const { baseUrl, apiKey, apiModel } = resolveEndpoint(model);
+  const apiUrl = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
-  if (!apiKey) {
+  if (!apiKey && !isLocalModel(model)) {
     throw new Error('LLM_API_KEY is not set. Add it to backend/.env');
   }
 
@@ -151,7 +177,10 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
   if (options.stopSequence) {
     instructions.push(`Stop writing immediately after you output: "${options.stopSequence}"`);
   }
-  const tools = options.format !== 'json' && options.tools?.tools.length ? options.tools : undefined;
+  let tools = options.format !== 'json' && options.tools?.tools.length ? options.tools : undefined;
+  // Instructions that don't mention tools — the system prompt to fall back to
+  // if the model turns out not to support them.
+  const instructionsWithoutTools = instructions.join(' ');
   if (tools) {
     instructions.push(
       'You have tools that return real, up-to-date data. When the question needs such data (e.g. the weather), call the matching tool instead of guessing, then answer using what it returned. If a tool returns an error, tell the user plainly what went wrong.',
@@ -256,7 +285,7 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     { role: 'user', content: prompt },
   ];
 
-  const requestBody: Record<string, unknown> = { model, messages };
+  const requestBody: Record<string, unknown> = { model: apiModel, messages };
 
   if (options.format === 'json') {
     requestBody.response_format = { type: 'json_object' };
@@ -290,7 +319,20 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
     // log must show exactly what each individual call sent.
     const body = { ...requestBody, messages: [...messages] };
     requests.push({ label: round === 1 ? label : `${label}:tool-round-${round}`, body });
-    data = await postChatCompletion(apiUrl, apiKey, body);
+    try {
+      data = await postChatCompletion(apiUrl, apiKey, body);
+    } catch (error) {
+      // Some local models (e.g. gemma3 in Ollama) reject any request with
+      // `tools` — answer without them rather than fail the whole turn.
+      if (!(tools && round === 1 && /does not support tools/i.test((error as Error).message))) throw error;
+      tools = undefined;
+      delete requestBody.tools;
+      delete requestBody.tool_choice;
+      messages[0] = { role: 'system', content: instructionsWithoutTools };
+      requests.pop();
+      round--;
+      continue;
+    }
     usage = sumUsage(usage, parseUsage(data.usage));
 
     const message = data.choices?.[0]?.message;
@@ -355,21 +397,22 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
 
   return {
     content,
-    model: data.model ?? model,
+    // Keep the "ollama/" prefix so callers (cost, UI) still know it ran locally.
+    model: isLocalModel(model) ? model : (data.model ?? model),
     usage,
     requests,
     ...(toolCalls.length ? { toolCalls } : {}),
   };
 }
 
-async function postChatCompletion(apiUrl: string, apiKey: string, body: Record<string, unknown>): Promise<any> {
+async function postChatCompletion(apiUrl: string, apiKey: string | undefined, body: Record<string, unknown>): Promise<any> {
   let response: Response;
   try {
     response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify(body),
     });

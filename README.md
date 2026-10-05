@@ -197,3 +197,23 @@ npm run rag-chat-check --workspace=backend -- --report ../docs/day25-rag-chat.md
 - [ ] Drop in the actual challenge repo(s) mentioned separately
 - [ ] Decide on a datastore (Postgres/SQLite/etc.) and wire it into `backend`
 - [ ] Add CI (lint + build) once the shape of the project settles
+
+## Day 26 — local LLM (Ollama)
+
+A local model runs through [Ollama](https://ollama.com) and plugs into the same
+`callLlm` as the cloud ones: a model named `ollama/<name>` is sent to
+`LOCAL_LLM_API_URL` (default `http://localhost:11434/v1`, Ollama's
+OpenAI-compatible API) with the prefix stripped, no API key, cost 0.
+
+```bash
+brew install ollama && brew services start ollama
+ollama pull qwen2.5:7b
+ollama run qwen2.5:7b "Привет"                                      # Ollama CLI
+curl localhost:11434/api/generate -d '{"model":"qwen2.5:7b","prompt":"2+2?","stream":false}'
+npm run ask --workspace=backend -- --model ollama/qwen2.5:7b "Столица Франции?"
+```
+
+In the chat UI pick **Локальная (Ollama, qwen2.5:7b)** or **(…, gemma3:12b)** in the Model selector
+(`ollama pull gemma3:12b` first). gemma3 has no tool calling — with MCP on, the
+request is retried without tools.
+Test run: [docs/day26-local-llm.md](docs/day26-local-llm.md).

@@ -434,6 +434,8 @@ const MODELS = [
   { value: 'gpt-3.5-turbo-instruct', label: 'Малое окно (gpt-3.5-turbo-instruct, 4k)' },
   { value: 'deepseek-r1-distill-llama-70b', label: 'Малое окно, ближе к DeepSeek (deepseek-r1-distill-llama-70b, 8k)' },
   { value: 'qwen-2.5-72b-instruct', label: 'Малое окно, быстрее (qwen-2.5-72b-instruct, 32k)' },
+  { value: 'ollama/qwen2.5:7b', label: 'Локальная (Ollama, qwen2.5:7b)' },
+  { value: 'ollama/gemma3:12b', label: 'Локальная (Ollama, gemma3:12b)' },
 ] as const;
 
 const STORAGE_KEY = 'advent.chats';
