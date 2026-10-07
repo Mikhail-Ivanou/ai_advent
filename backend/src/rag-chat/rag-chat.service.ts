@@ -336,7 +336,8 @@ export class RagChatService {
         title: chat.title,
       };
       try {
-        return await this.turn(chat, text, model);
+        // The chat's own model setting (Day 28: may be a local one) unless the request names one.
+        return await this.turn(chat, text, model ?? chat.settings.model);
       } catch (error) {
         // A failed turn (LLM unreachable…) leaves the chat as it was.
         chat.messages.length = before.messages;

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Grounding, GroundingView } from '@/components/GroundingView';
+import { MODELS } from '@/app/models';
 
 // Day 25: mini chat over the document index — history, RAG on every message,
 // sources on every answer, and the task memory of the dialog (goal,
@@ -34,7 +35,7 @@ type Chat = {
   title: string;
   messages: Message[];
   memory: TaskMemory;
-  settings: { rerank?: Rerank; minScore?: number; k?: number; candidates?: number; rewrite?: boolean };
+  settings: { rerank?: Rerank; minScore?: number; k?: number; candidates?: number; rewrite?: boolean; model?: string };
 };
 
 type ChatSummary = { id: string; title: string; updatedAt: string; messages: number; goal: string };
@@ -341,6 +342,20 @@ export default function RagChatPage() {
           <section className="rounded-lg border border-black/10 bg-white p-3 text-xs">
             <h2 className="mb-2 text-sm font-medium text-pine">Поиск</h2>
             <div className="flex flex-col gap-1.5">
+              <label className="flex items-center justify-between gap-2" title="память, ответ и LLM-реранкер; локальные — через Ollama">
+                модель
+                <select
+                  value={chat.settings.model ?? MODELS[0].value}
+                  onChange={(e) => saveSettings({ model: e.target.value })}
+                  className={`${input_} max-w-[11rem]`}
+                >
+                  {MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="flex items-center justify-between gap-2">
                 реранкер
                 <select

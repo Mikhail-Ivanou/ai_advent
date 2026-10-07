@@ -217,3 +217,30 @@ In the chat UI pick **Локальная (Ollama, qwen2.5:7b)** or **(…, gemma
 (`ollama pull gemma3:12b` first). gemma3 has no tool calling — with MCP on, the
 request is retried without tools.
 Test run: [docs/day26-local-llm.md](docs/day26-local-llm.md).
+
+## Day 28 — local LLM + RAG
+
+The RAG pipeline runs fully on this machine: the Week 6 index
+(`backend/data/rag`, e5 embeddings via transformers.js), hybrid search
+(vectors + BM25), the local cross-encoder reranker and threshold, and the
+answer from a local model through Ollama (Day 26) in the Day 24 grounded
+format. Pick the model:
+
+- `/rag` — "модель" next to the reranker settings;
+- `/rag-chat` — "модель" in the chat's search settings (memory, answer and
+  LLM reranker all use it);
+- `/chat` with RAG on — the usual Model selector.
+
+Local vs cloud on the control questions — quality (same judge, facts,
+quotes, "не знаю" as Days 22–24), speed (model load, answer time,
+retrieval vs LLM) and stability (each question asked several times at
+temperature 0: same verdict / same answer, format kept, language kept,
+errors):
+
+```bash
+brew services start ollama
+npm run rag-local --workspace=backend -- --runs 3 --report ../docs/day28-local-rag.md
+# --models ollama/gemma3:12b,ollama/qwen2.5:7b,deepseek-v4-flash  --judge deepseek-v4-pro  --only q1,n1
+```
+
+Result: [docs/day28-local-rag.md](docs/day28-local-rag.md).

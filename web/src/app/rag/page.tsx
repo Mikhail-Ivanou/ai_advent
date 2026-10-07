@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Grounding, GroundingView } from '@/components/GroundingView';
+import { MODELS } from '@/app/models';
 
 // Day 21: document indexing — add documents by URL or file, chunk them with
 // two strategies, embed locally, inspect chunks and compare the strategies.
@@ -191,6 +192,7 @@ export default function RagPage() {
   const [askRerank, setAskRerank] = useState<Rerank>('cross-encoder');
   const [askCandidates, setAskCandidates] = useState(20);
   const [askMinScore, setAskMinScore] = useState(RERANK_THRESHOLDS['cross-encoder']);
+  const [askModel, setAskModel] = useState<string>(MODELS[0].value);
   const [askResult, setAskResult] = useState<{ plain: RagAnswer; rag: RagAnswer } | null>(null);
   const [asking, setAsking] = useState(false);
 
@@ -331,6 +333,7 @@ export default function RagPage() {
             rerank: askRerank,
             candidates: askCandidates,
             minScore: askMinScore,
+            model: askModel,
           }),
         }),
       );
@@ -740,6 +743,16 @@ export default function RagPage() {
             </button>
           </form>
           <div className="mb-2 flex flex-wrap items-center gap-3 text-[#5c5c5c]">
+            <label className="flex items-center gap-1" title="модель ответа, rewrite и LLM-реранкера; локальные — через Ollama">
+              модель
+              <select value={askModel} onChange={(e) => setAskModel(e.target.value)} className={input}>
+                {MODELS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="flex items-center gap-1" title="LLM переписывает вопрос в поисковый запрос; ищется по обоим, рейтинги сливаются">
               <input type="checkbox" checked={askRewrite} onChange={(e) => setAskRewrite(e.target.checked)} />
               query rewrite

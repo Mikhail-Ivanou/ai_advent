@@ -15,6 +15,7 @@
     "orchestration-check": "ts-node -r tsconfig-paths/register src/llm/orchestration-check-cli.ts",
     "rag": "ts-node -r tsconfig-paths/register src/rag/rag-cli.ts",
     "rag-eval": "ts-node -r tsconfig-paths/register src/rag/rag-eval-cli.ts",
+    "rag-local": "ts-node -r tsconfig-paths/register src/rag/rag-local-cli.ts",
     "rag-chat-check": "ts-node -r tsconfig-paths/register src/rag-chat/scenario-check-cli.ts"
   },
   "dependencies": {
