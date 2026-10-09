@@ -8,9 +8,10 @@ import { InvariantModule } from './invariant/invariant.module';
 import { McpModule } from './mcp/mcp.module';
 import { RagModule } from './rag/rag.module';
 import { RagChatModule } from './rag-chat/rag-chat.module';
+import { OrderExtractModule } from './order-extract/order-extract.module';
 
 @Module({
-  imports: [LlmModule, MemoryModule, ProfileModule, InvariantModule, McpModule, RagModule, RagChatModule],
+  imports: [LlmModule, MemoryModule, ProfileModule, InvariantModule, McpModule, RagModule, RagChatModule, OrderExtractModule],
   controllers: [AppController],
   providers: [AppService],
 })

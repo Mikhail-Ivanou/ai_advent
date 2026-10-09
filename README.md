@@ -244,3 +244,37 @@ npm run rag-local --workspace=backend -- --runs 3 --report ../docs/day28-local-r
 ```
 
 Result: [docs/day28-local-rag.md](docs/day28-local-rag.md).
+
+## Day 29 — optimizing a local LLM for one task
+
+A task of its own, without RAG or tools: a customer's e-mail to an appliance
+shop → the order as JSON (customer, phone, city, catalog SKUs with final
+quantities, delivery date, payment, urgency). `qwen2.5:7b` in Ollama on
+three quantizations (Q3_K_M, Q4_K_M, Q8_0); the prompt
+(`backend/src/order-extract/prompt.ts`) is the same everywhere — only
+temperature, max tokens (`num_predict`) and the context window (`num_ctx`)
+change. 12 control e-mails with expected orders
+(`backend/src/order-extract/dataset.ts`), 3 of them ≈5k tokens long; scored
+field by field automatically. Quality, speed (cold load, prompt reading vs
+generation from Ollama's own timings), memory and stability per config:
+
+```bash
+cd backend
+ollama pull qwen2.5:7b && ollama pull qwen2.5:7b-instruct-q3_K_M && ollama pull qwen2.5:7b-instruct-q8_0
+# the optimized model — Modelfile generated from the prompt and the chosen parameters
+npm run order-extract -- --modelfile ollama/order-extractor.Modelfile
+ollama create order-extractor -f ollama/order-extractor.Modelfile
+npm run order-extract -- --runs 3 --save data/order-extract-results.json --report ../docs/day29-local-optimization.md
+# --configs q4-default,q4-opt,extractor  --only e1,L1  --tokens (prompt length per e-mail)
+```
+
+`order-extractor` = Q4_K_M, temperature 0, `num_ctx 8192`, `num_predict 256`
+and the system prompt; called with no options it answers exactly as the
+`q4-opt` configuration.
+
+Demo in the browser — `/order-extract` (linked from the home page): one chat
+per configuration, the same e-mail sent to each; every answer shows the
+fields against the expected order, whether the prompt fit the window or the
+answer hit max tokens, time, speed and the model's memory.
+
+Result: [docs/day29-local-optimization.md](docs/day29-local-optimization.md).

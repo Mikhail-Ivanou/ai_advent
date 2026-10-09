@@ -29,6 +29,9 @@ export default function Home() {
       <Link href="/rag-chat" className="text-pine underline">
         Mini chat with RAG + task memory →
       </Link>
+      <Link href="/order-extract" className="text-pine underline">
+        Local LLM: e-mail → order JSON, settings compared →
+      </Link>
     </main>
   );
 }
