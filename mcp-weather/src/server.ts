@@ -4,9 +4,11 @@ import { Forecast, HOURLY_STEP, MAX_DAYS, MAX_HOURLY_DAYS, WeatherError, geocode
 import { MIN_INTERVAL_MINUTES, Scheduler, SchedulerError, Task, describeSchedule } from './scheduler.js';
 import { FileArtifact, Pipeline, PipelineError, SOURCE_LABELS, describeStep, shortHash, signFilename } from './pipeline.js';
 
-// Where saved files can be downloaded from, e.g. http://176.53.174.74:3002 —
-// the server can't know its own public address behind NAT/proxies.
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '') ?? '';
+// Where saved files can be downloaded from, e.g. https://mcp.example.com —
+// the server can't know its own public address behind NAT/proxies. Defaults
+// to localhost, which is right for a local run.
+const PUBLIC_BASE_URL =
+  process.env.PUBLIC_BASE_URL?.trim().replace(/\/$/, '') || `http://localhost:${process.env.PORT ?? 3002}`;
 
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN?.trim() || undefined;
 

@@ -91,17 +91,32 @@ source's id and sha256, so the chain can be checked end to end.
 
 ## Local run
 
+This is the default setup now (the h3llo.cloud VM is gone).
+
 ```bash
 cp mcp-weather/.env.example mcp-weather/.env   # MCP_AUTH_TOKEN can stay empty locally
 npm run dev:mcp-weather                         # http://localhost:3002/mcp/{weather,scheduler,research}
 ```
 
+Or in Docker, with the data on a volume: `cd mcp-weather && docker compose up -d --build`.
+
 In the app: **MCP** (bottom left), then add three servers:
 `http://localhost:3002/mcp/weather`, `…/mcp/scheduler` and `…/mcp/research`,
 with protocol "Авто". If a token is set, give each one the header
-`Authorization: Bearer <token>`.
+`Authorization: Bearer <token>`. Servers previously added with a VM address
+can be edited in place: change the URL and drop the `Authorization` header.
 
-## Deploy to h3llo.cloud
+- Data (`scheduler.json`, `pipeline.json`, saved files) lives in
+  `mcp-weather/data/`, which is gitignored. Tasks scheduled on the VM are not
+  carried over.
+- The scheduler runs only while the process does — background tasks pause
+  when you stop it and resume (one run, no burst) when it starts again.
+- `save_to_file` links point at `http://localhost:3002` unless
+  `PUBLIC_BASE_URL` is set.
+- Port 3002 must be free: if `next dev` was started while 3000 was taken, it
+  may be sitting on it.
+
+## Deploy to a VM (h3llo.cloud)
 
 h3llo.cloud is IaaS (VMs, disks, networking), with no managed container
 service, so the server runs in Docker on a VM.

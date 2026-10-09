@@ -9,7 +9,8 @@ backend and a Next.js frontend, wired together for local development.
 advent/
 ├── backend/      NestJS API (TypeScript)
 ├── web/          Next.js frontend (TypeScript, App Router, Tailwind)
-└── mcp-weather/  MCP server with a weather tool (see mcp-weather/README.md)
+├── mcp-weather/  MCP server with a weather tool (see mcp-weather/README.md)
+└── llm-gateway/  network gateway to the local Ollama model (see llm-gateway/README.md)
 docs/             reports (e.g. Day 21 chunking comparison)
 ```
 
@@ -26,7 +27,8 @@ Run both apps in separate terminals:
 ```bash
 npm run dev:backend   # http://localhost:3001
 npm run dev:web        # http://localhost:3000
-npm run dev:mcp-weather  # http://localhost:3002/mcp — optional, weather MCP tool
+npm run dev:mcp-weather  # http://localhost:3002/mcp/{weather,scheduler,research} — MCP servers
+npm run dev:llm-gateway  # http://0.0.0.0:8088/v1 — local LLM as a private network service
 ```
 
 The web app proxies `/api/backend/*` to the backend (see `web/next.config.mjs`),
@@ -40,6 +42,7 @@ Each package has a `.env.example`. Copy to `.env` and adjust as needed:
 cp backend/.env.example backend/.env
 cp web/.env.example web/.env.local
 cp mcp-weather/.env.example mcp-weather/.env
+cp llm-gateway/.env.example llm-gateway/.env   # then set GATEWAY_KEYS
 ```
 
 ## Adding a day's challenge

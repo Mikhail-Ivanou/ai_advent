@@ -28,6 +28,7 @@ node_modules/
 *.pid
 *.pid.lock
 backend/data/
+mcp-weather/data/
 
 # Coverage
 coverage/
@@ -62,3 +63,6 @@ out/
 .yarn/unplugged
 .yarn/install-state.gz
 .pnp.*
+# Xcode
+ios/**/build/
+xcuserdata/

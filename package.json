@@ -5,13 +5,15 @@
   "workspaces": [
     "backend",
     "web",
-    "mcp-weather"
+    "mcp-weather",
+    "llm-gateway"
   ],
   "scripts": {
     "dev:backend": "npm run start:dev --workspace=backend",
     "dev:web": "npm run dev --workspace=web",
-    "build": "npm run build --workspace=backend && npm run build --workspace=web && npm run build --workspace=mcp-weather",
+    "build": "npm run build --workspace=backend && npm run build --workspace=web && npm run build --workspace=mcp-weather && npm run build --workspace=llm-gateway",
     "lint": "npm run lint --workspace=backend && npm run lint --workspace=web",
-    "dev:mcp-weather": "npm run dev --workspace=mcp-weather"
+    "dev:mcp-weather": "npm run dev --workspace=mcp-weather",
+    "dev:llm-gateway": "npm run dev --workspace=llm-gateway"
   }
 }
