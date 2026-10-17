@@ -296,7 +296,8 @@ npm run dev-help --workspace=backend -- "/help где живёт RAG-пайпл�
 - **RAG over the project's own docs** (`project-docs.ts`): every `README.md`,
   everything in `docs/`, the backend HTTP API generated from the Nest
   controllers (method, path, handler signature, doc comment — can't go stale)
-  and the data schemas (`*.types.ts`). Structural chunks, the same local e5
+  the data schemas (`*.types.ts`) and the iOS client's Swift sources
+  (`ios/**/*.swift`). Structural chunks, the same local e5
   embeddings, hybrid search (vectors + BM25, RRF). Index in
   `backend/data/dev-assistant/index.json`; on start only changed files are
   re-embedded (by content hash), `/reindex` does it on demand.

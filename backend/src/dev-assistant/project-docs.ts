@@ -11,7 +11,9 @@ import { DocumentKind, IndexedChunk, SearchHit } from '../rag/rag.types';
 // documentation, not the user's uploaded books. The corpus is collected from
 // the repository on every start: the READMEs, everything in docs/, the
 // backend's HTTP API (generated from the Nest controllers, so it can't go
-// stale) and the data schemas (*.types.ts). Chunks of unchanged files are
+// stale), the data schemas (*.types.ts) and the iOS client's Swift sources —
+// small enough to index whole, and its models and gateway client are the
+// app's API description. Chunks of unchanged files are
 // reused by content hash, so a restart re-embeds only what was edited.
 
 export const REPO_DIR = path.resolve(process.env.DEV_ASSISTANT_REPO_DIR?.trim() || path.join(process.cwd(), '..'));
@@ -20,7 +22,7 @@ const STRUCTURAL = { maxSize: 1400, minSize: 300 };
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'data', 'build', 'img']);
 
 /** What a document of the corpus is, for the UI and the model. */
-export type ProjectDocGroup = 'readme' | 'docs' | 'api' | 'schema';
+export type ProjectDocGroup = 'readme' | 'docs' | 'api' | 'schema' | 'ios';
 
 export interface ProjectDoc {
   /** Repository-relative path; the generated API reference has a virtual one. */
@@ -128,7 +130,7 @@ function docCommentBefore(lines: string[], index: number): string {
     .join(' ');
 }
 
-/** Collects the corpus from the repository: READMEs, docs/, the API reference and data schemas. */
+/** Collects the corpus from the repository: READMEs, docs/, the API reference, data schemas and the iOS app. */
 export async function collectProjectDocs(): Promise<ProjectDoc[]> {
   const read = async (files: string[], group: ProjectDocGroup) =>
     Promise.all(
@@ -141,12 +143,14 @@ export async function collectProjectDocs(): Promise<ProjectDoc[]> {
     ...(await walk(path.join(REPO_DIR, 'backend', 'src'), (rel) => rel.endsWith('.types.ts'))),
     ...(await walk(path.join(REPO_DIR, 'mcp-weather', 'src'), (rel) => rel.endsWith('.types.ts'))),
   ];
+  const swift = await walk(path.join(REPO_DIR, 'ios'), (rel) => rel.endsWith('.swift'));
   const api = await read(controllers, 'api');
   return [
     ...(await read(readmes, 'readme')),
     ...(await read(docs, 'docs')),
     { path: 'backend/API.md (сгенерировано из контроллеров)', group: 'api', content: describeControllers(api) },
     ...(await read(schemas, 'schema')),
+    ...(await read(swift, 'ios')),
   ];
 }
 

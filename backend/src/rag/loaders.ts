@@ -270,9 +270,9 @@ function loadHtml(source: string, raw: string): LoadedDocument {
 
 // ---------------------------------------------------------------- Code
 
-// A new top-level declaration starts a section: TS/JS, Python, Go, Rust, Java-ish.
+// A new top-level declaration starts a section: TS/JS, Python, Go, Rust, Swift, Java-ish.
 const CODE_DECLARATION =
-  /^(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(function\*?|class|interface|type|enum|const|let|var|def|func|fn|struct|impl|trait|module|namespace)\s+([A-Za-z_$][\w$]*)/;
+  /^(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:(?:public|private|protected|fileprivate|internal|open|final)\s+)*(?:static\s+)?(function\*?|class|interface|type|enum|const|let|var|def|func|fn|struct|impl|trait|module|namespace|protocol|extension|actor)\s+([A-Za-z_$][\w$]*)/;
 
 function loadCode(source: string, raw: string): LoadedDocument {
   const builder = new SectionBuilder();

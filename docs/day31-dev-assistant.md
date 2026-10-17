@@ -20,7 +20,7 @@ project's own documentation (RAG) and from its live git state (MCP).
 ## What is indexed (RAG)
 
 The corpus is collected from the repository each time the backend starts, so
-there is no list to maintain. 20 files, 265 chunks:
+there is no list to maintain. 26 files, 298 chunks:
 
 | Group | Files |
 |---|---|
@@ -28,6 +28,7 @@ there is no list to maintain. 20 files, 265 chunks:
 | docs | `docs/*.md`: the day reports |
 | API | `backend/API.md`, generated from the Nest controllers. Each route gets its method, full path, handler signature with body/param types, and doc comment, so it always matches the code. |
 | Data schemas | `backend/src/**/*.types.ts`: RAG index and chunks, RAG chat and `TaskMemory`, MCP servers, memory, profiles, invariants |
+| iOS app | `ios/**/*.swift`: the SwiftUI client of `llm-gateway`. Its models and `GatewayClient` (health, models, streaming chat) describe how the app talks to the server. 5 files, ~600 lines, chunked by top-level `struct`/`class`/`enum`. |
 
 How it is built:
 - Chunks are structural: one per heading or top-level declaration, as on Day 21.
@@ -94,6 +95,7 @@ the local `ollama/qwen2.5:7b` on an M1 Pro.
 | `/help какие эндпоинты у rag-chat и где лежит их код?` | `read_project_file(rag-chat.controller.ts)` | All 7 routes, with the correct file | 37 s |
 | `/help где реализован RAG-пайплайн и из каких шагов он состоит?` | `git_list_files` ×2, `read_project_file` ×2 | Correct: `backend/src/rag/rag-pipeline.ts`, `runPipeline`, rewrite → hybrid → rerank → threshold → top-K. It first tried a non-existent `rag.ts`, got an error, listed the directory and found the right file. | 145 s |
 | `/help какие файлы сейчас изменены в рабочей копии…` | `git_status` | Listed the changed files. One attribution was wrong: it put `.claude/launch.json` under "backend". | 40 s |
+| `/help как iOS-приложение получает стриминговый ответ от сервера и где задаётся адрес сервера?` | — | The server address part is correct, from the excerpts: a `TextField` in `SettingsView.swift`, then `GatewayClient(serverURL:apiKey:)`. The streaming part is vague: the `streamChat` chunk was not among the excerpts and the model did not open the file. | 41 s |
 
 The first version of the prompt let the 7B model name files from memory, for
 example a `backend/src/rag/rag.ts` that does not exist. Adding "never name a
