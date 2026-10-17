@@ -9,7 +9,7 @@ pick a tool across servers and route each call to the right one.
 | `advent-weather` | `POST /mcp/weather` | `get_weather_forecast` |
 | `advent-scheduler` | `POST /mcp/scheduler` | `schedule_task`, `list_scheduled_tasks`, `get_task_summary`, `set_task_status`, `get_task_events` |
 | `advent-research` | `POST /mcp/research` | `search`, `summarize`, `save_to_file`, `run_pipeline` |
-| `advent-git` | `POST /mcp/git` | `git_current_branch`, `git_status`, `git_list_files`, `git_diff`, `git_log`, `read_project_file` — read-only view of the project repository (`GIT_REPO_DIR`, default: the repo this server runs from), used by the developer assistant (Day 31) |
+| `advent-git` | `POST /mcp/git` | `git_current_branch`, `git_status`, `git_list_files`, `git_diff`, `git_log`, `read_project_file`, `search_code`, `get_file_raw`, `write_project_file` — view of the project repository (`GIT_REPO_DIR`, default: the repo this server runs from); read-only except `write_project_file` (Day 34), used by the developer assistant (Day 31) |
 | `advent-crm` | `POST /mcp/crm` | `crm_find_user`, `crm_list_users`, `crm_get_user`, `crm_list_tickets`, `crm_get_ticket`, `crm_get_gateway_events`, `crm_create_ticket`, `crm_add_ticket_reply` — users, tickets and gateway events of Advent LLM for the support assistant (Day 33); seed in `crm/seed.json`, changes in `data/crm.json` (`CRM_DATA_PATH`) |
 
 Transport: Streamable HTTP, stateless. All of them share one bearer token

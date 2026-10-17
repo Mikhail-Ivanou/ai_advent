@@ -20,7 +20,8 @@
     "rag-chat-check": "ts-node -r tsconfig-paths/register src/rag-chat/scenario-check-cli.ts",
     "dev-help": "ts-node -r tsconfig-paths/register src/dev-assistant/dev-help-cli.ts",
     "review": "ts-node -r tsconfig-paths/register src/review/review-cli.ts",
-    "support": "ts-node -r tsconfig-paths/register src/support/support-cli.ts"
+    "support": "ts-node -r tsconfig-paths/register src/support/support-cli.ts",
+    "file-task": "ts-node -r tsconfig-paths/register src/file-agent/file-task-cli.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

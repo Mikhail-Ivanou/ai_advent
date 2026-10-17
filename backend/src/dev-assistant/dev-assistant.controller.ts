@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, Body, Controller, Get, Post } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Get, Param, Post } from '@nestjs/common';
 import { ChatMessage } from '../llm/llm.client';
 import { DevAssistantService } from './dev-assistant.service';
 
@@ -21,6 +21,33 @@ export class DevAssistantController {
       return await this.devAssistant.handle(body.message, body.history ?? [], body.model);
     } catch (error) {
       throw new BadGatewayException((error as Error).message);
+    }
+  }
+
+  /** Day 34: the file agent's saved runs (goal, status), newest first. */
+  @Get('tasks')
+  async tasks() {
+    return { tasks: await this.devAssistant.files.list() };
+  }
+
+  @Get('tasks/:id')
+  async task(@Param('id') id: string) {
+    try {
+      return await this.devAssistant.files.get(id);
+    } catch (error) {
+      throw new BadRequestException((error as Error).message);
+    }
+  }
+
+  /** Writes the run's changes to the working copy (MCP write_project_file, sha1-guarded); `paths` — only these files. */
+  @Post('tasks/:id/apply')
+  async apply(@Param('id') id: string, @Body() body: { paths?: string[] } = {}) {
+    try {
+      return await this.devAssistant.files.apply(id, body?.paths);
+    } catch (error) {
+      const message = (error as Error).message;
+      // Unknown run / nothing to apply / already applied — the request, not the server.
+      throw /^Нет запуска/.test(message) ? new BadRequestException(message) : new ConflictException(message);
     }
   }
 }

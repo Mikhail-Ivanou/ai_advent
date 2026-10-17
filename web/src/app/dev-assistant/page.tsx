@@ -14,8 +14,21 @@ type Branch = { branch: string; detached: boolean; head: { sha: string; subject:
 type Source = { n: number; file: string; section: string; score: number; cited: boolean; text: string };
 type ToolCall = { round: number; name: string; tool?: string; arguments: Record<string, unknown>; result: string; isError: boolean; durationMs: number };
 
+type FileChange = { path: string; kind: 'create' | 'modify'; diff: string; additions: number; deletions: number };
+type Task = {
+  id: string;
+  goal: string;
+  status: 'no-changes' | 'proposed' | 'applied' | 'partially-applied' | 'failed';
+  changes: FileChange[];
+  diff: string;
+  filesRead: string[];
+  searches: string[];
+  applied?: { path: string; ok: boolean; message: string }[];
+};
+
 type Reply = {
   command: string;
+  task?: Task;
   question?: string;
   answer: string;
   branch?: Branch;
@@ -46,6 +59,9 @@ const EXAMPLES = [
   '/branch',
   '/files backend/src',
   '/review main',
+  '/task Найди все места, где используется McpEndpointClient, и опиши, кто что через него вызывает. Файлы не меняй.',
+  '/task Проверь, что каждая переменная окружения, которую читает backend, описана в backend/.env.example; допиши недостающие.',
+  '/task Сгенерируй CHANGELOG.md по истории коммитов и отчётам в docs/ за дни 30–33.',
 ];
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -160,7 +176,13 @@ export default function DevAssistantPage() {
               <AssistantReply key={i} reply={entry.reply} />
             ),
           )}
-          {busy && <p className="text-sm text-[#5c5c5c]">{entries[entries.length - 1]?.role === 'user' && (entries[entries.length - 1] as { content: string }).content.startsWith('/review') ? 'Читаю diff, подбираю контекст из документации и кода, ревьюю… (обычно 30–90 с)' : 'Смотрю документацию и репозиторий…'}</p>}
+          {busy && <p className="text-sm text-[#5c5c5c]">{(() => {
+                const last = entries[entries.length - 1];
+                const text = last?.role === 'user' ? last.content : '';
+                if (text.startsWith('/review')) return 'Читаю diff, подбираю контекст из документации и кода, ревьюю… (обычно 30–90 с)';
+                if (text.startsWith('/task')) return 'Работаю с файлами: ищу, читаю, анализирую, готовлю изменения… (обычно 1–2 мин)';
+                return 'Смотрю документацию и репозиторий…';
+              })()}</p>}
           <div ref={bottom} />
         </div>
 
@@ -280,7 +302,8 @@ function BranchBadge({ branch, error }: { branch?: Branch; error?: string }) {
 function AssistantReply({ reply }: { reply: Reply }) {
   return (
     <div className="max-w-[95%] rounded-lg border border-black/10 bg-paper px-3 py-2 text-sm">
-      {reply.command === '/review' ? <ReviewMarkdown text={reply.answer} /> : <p className="whitespace-pre-wrap">{reply.answer}</p>}
+      {reply.command === '/review' || reply.command === '/task' ? <ReviewMarkdown text={reply.answer} /> : <p className="whitespace-pre-wrap">{reply.answer}</p>}
+      {reply.task && <TaskChanges initial={reply.task} />}
       {reply.gitError && <p className="mt-1 text-xs text-amber-700">git: {reply.gitError}</p>}
       {reply.sources && reply.sources.length > 0 && (
         <details className="mt-2 text-xs">
@@ -324,6 +347,87 @@ function AssistantReply({ reply }: { reply: Reply }) {
         {reply.command} · {reply.model ?? 'без LLM'} · {(reply.durationMs / 1000).toFixed(1)} с
         {reply.usage ? ` · ${reply.usage.totalTokens} токенов` : ''}
       </p>
+    </div>
+  );
+}
+
+/** Day 34: the file agent's changeset — a diff per file, applied to the working copy on request. */
+function TaskChanges({ initial }: { initial: Task }) {
+  const [task, setTask] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function apply() {
+    setBusy(true);
+    setError(null);
+    try {
+      setTask(await api<Task>(`/tasks/${task.id}/apply`, { method: 'POST' }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-black/10 bg-white p-2 text-xs">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <span className="font-medium">
+          {task.changes.length ? `Изменения: ${task.changes.length} файл(ов)` : 'Файлы не изменены'}
+        </span>
+        <span className="text-[#5c5c5c]">
+          прочитано {task.filesRead.length}, поисков {task.searches.length} · запуск <span className="font-mono">{task.id}</span>
+        </span>
+      </div>
+      {task.changes.map((c) => (
+        <details key={c.path} open className="mb-1">
+          <summary className="cursor-pointer font-mono">
+            {c.kind === 'create' ? '✚' : '✎'} {c.path} <span className="text-pine">+{c.additions}</span> <span className="text-red-600">−{c.deletions}</span>
+          </summary>
+          <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-[#fafafa] p-2 font-mono text-[11px] leading-snug">
+            {c.diff.split('\n').map((l, i) => (
+              <div
+                key={i}
+                className={
+                  l.startsWith('+') && !l.startsWith('+++')
+                    ? 'bg-green-50 text-green-800'
+                    : l.startsWith('-') && !l.startsWith('---')
+                      ? 'bg-red-50 text-red-700'
+                      : l.startsWith('@@')
+                        ? 'text-sky-700'
+                        : l.startsWith('diff ') || l.startsWith('---') || l.startsWith('+++') || l.startsWith('new file')
+                          ? 'text-[#999]'
+                          : ''
+                }
+              >
+                {l || ' '}
+              </div>
+            ))}
+          </pre>
+        </details>
+      ))}
+      {task.changes.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {task.status === 'proposed' ? (
+            <button type="button" onClick={apply} disabled={busy} className="rounded bg-pine px-3 py-1 text-white disabled:opacity-50" title="Записать изменения в рабочую копию через MCP write_project_file">
+              {busy ? 'Применяю…' : 'Применить изменения'}
+            </button>
+          ) : (
+            <span className={task.status === 'applied' ? 'text-pine' : 'text-amber-700'}>
+              {task.status === 'applied' ? '✓ Применено' : task.status === 'failed' ? 'Не применено — конфликт' : 'Применено частично'}
+            </span>
+          )}
+          <span className="text-[#5c5c5c]">
+            или <code>git apply backend/data/file-tasks/{task.id}.patch</code>
+          </span>
+        </div>
+      )}
+      {task.applied?.map((a) => (
+        <div key={a.path} className={a.ok ? 'text-pine' : 'text-red-600'}>
+          {a.ok ? '✓' : '✗'} {a.message}
+        </div>
+      ))}
+      {error && <p className="text-red-600">{error}</p>}
     </div>
   );
 }

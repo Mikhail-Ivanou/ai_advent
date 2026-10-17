@@ -301,9 +301,11 @@ npm run dev-help --workspace=backend -- "/help где живёт RAG-пайпл�
   embeddings, hybrid search (vectors + BM25, RRF). Index in
   `backend/data/dev-assistant/index.json`; on start only changed files are
   re-embedded (by content hash), `/reindex` does it on demand.
-- **MCP git server** (`mcp-weather/src/git.ts`, `POST /mcp/git`), read-only:
+- **MCP git server** (`mcp-weather/src/git.ts`, `POST /mcp/git`), read-only,
+  except `write_project_file` (Day 34):
   `git_current_branch`, `git_status`, `git_list_files`, `git_diff`,
-  `git_log`, `read_project_file`. The repository is the one the server runs
+  `git_log`, `read_project_file`, `search_code`, `get_file_raw`,
+  `write_project_file`. The repository is the one the server runs
   from (`GIT_REPO_DIR` overrides it).
 - **`/help <question>`**: branch + uncommitted changes (MCP) and the top-6
   documentation excerpts go to the model as project context; the git tools
@@ -399,3 +401,35 @@ npm run support --workspace=backend -- --user olga.kim@example.com "Какой �
 Env (backend): `SUPPORT_CRM_MCP_URL` (default `http://localhost:3002/mcp/crm`),
 `SUPPORT_CRM_MCP_TOKEN` (falls back to `MCP_AUTH_TOKEN`). See
 [docs/day33-support-assistant.md](docs/day33-support-assistant.md).
+
+## Day 34 — file agent (`/task <goal>`)
+
+An assistant that works on the project's files itself: you give a goal,
+not a file list. In the developer assistant (http://localhost:3000/dev-assistant)
+type `/task <goal>`, or in the terminal:
+
+```bash
+npm run dev:mcp-weather                                   # the git MCP server
+npm run file-task --workspace=backend -- "Найди все места, где используется McpEndpointClient. Файлы не меняй."
+npm run file-task --workspace=backend -- "Проверь, что каждая переменная окружения backend описана в backend/.env.example; допиши недостающие"
+npm run file-task --workspace=backend -- --apply-run <id> [--only a.md,b.md]
+npm run file-task --workspace=backend -- --list
+```
+
+- **Tools** (`backend/src/file-agent`): the git MCP server's read tools
+  (`search_code` across files, `git_list_files`, `read_project_file`,
+  `git_log`, `git_diff`) plus `edit_file` / `create_file`, which build a
+  changeset in memory on top of the files' current content (read raw via
+  MCP `get_file_raw`); the model re-reads its own edits.
+- **Result**: a report (what was found with `path:line`, what changed and
+  why) and a unified diff per file. Nothing is written until you apply:
+  "Применить изменения" in the UI or `--apply-run` writes the files through
+  MCP `write_project_file`, each guarded by the sha1 it was based on (a file
+  changed since → conflict, not overwritten); `--only` / `paths` applies
+  some files of a run.
+- **Reproducible**: every run is saved to `backend/data/file-tasks/<id>.json`
+  with the goal, report, changes and tool calls, plus `<id>.patch`
+  (`git apply`-able). Rerun the same goal to redo it.
+
+Env: `FILE_AGENT_MAX_ROUNDS` (default 30 model↔tool rounds). See
+[docs/day34-file-agent.md](docs/day34-file-agent.md).

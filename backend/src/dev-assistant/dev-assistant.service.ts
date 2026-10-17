@@ -3,6 +3,7 @@ import { callLlm, ChatMessage, LlmUsage, ToolCallLog } from '../llm/llm.client';
 import { SearchHit } from '../rag/rag.types';
 import { renderMarkdown } from '../review/render';
 import { CodeReviewer } from '../review/reviewer';
+import { FileAgent, FileTaskRun } from '../file-agent/file-agent';
 import { BranchInfo, GitMcpClient } from './git-mcp.client';
 import { DOC_GROUPS, IndexStats, ProjectDocsIndex } from './project-docs';
 
@@ -33,6 +34,8 @@ export interface DevAssistantReply {
   gitError?: string;
   sources?: DevSource[];
   toolCalls?: ToolCallLog[];
+  /** /task: the file agent's run — its changeset as a diff, to review and apply. */
+  task?: FileTaskRun;
   model?: string;
   usage?: LlmUsage;
   durationMs: number;
@@ -44,6 +47,7 @@ export const COMMANDS: { name: string; args?: string; description: string }[] = 
   { name: '/status', description: 'незакоммиченные изменения (MCP)' },
   { name: '/files', args: '[каталог]', description: 'структура проекта: каталоги и число файлов (MCP)' },
   { name: '/diff', args: '[ветка]', description: 'изменённые файлы: рабочая копия или ветка относительно указанной (MCP)' },
+  { name: '/task', args: '<цель>', description: 'задача над файлами проекта: ассистент сам ищет, читает и правит файлы; изменения — diff, применяются кнопкой' },
   { name: '/review', args: '[ветка]', description: 'AI-ревью изменений текущей ветки и рабочей копии относительно ветки (по умолчанию main): баги, архитектура, рекомендации' },
   { name: '/docs', description: 'что проиндексировано для RAG' },
   { name: '/reindex', description: 'переиндексировать документацию' },
@@ -65,6 +69,8 @@ export class DevAssistantService implements OnApplicationBootstrap {
   readonly git = new GitMcpClient();
   /** Day 32: shares the project index — documentation and code. */
   private readonly reviewer = new CodeReviewer(this.docs);
+  /** Day 34: works on the project's files through the same git MCP server. */
+  readonly files = new FileAgent(this.git);
 
   onApplicationBootstrap() {
     // Built in the background: the first /help waits for it if it's still running.
@@ -111,6 +117,11 @@ export class DevAssistantService implements OnApplicationBootstrap {
         return done({ answer: (await this.git.call('git_list_files', { ...(arg ? { path: arg } : {}), depth: 2 })).text });
       case '/diff':
         return done({ answer: (await this.git.call('git_diff', { ...(arg ? { base: arg } : {}), stat_only: true })).text });
+      case '/task': {
+        if (!arg) return done({ answer: 'Опишите цель: /task <что нужно сделать с файлами проекта>' });
+        const task = await this.files.run(arg, { model });
+        return done({ answer: task.report, task, toolCalls: task.toolCalls, model: task.model, usage: task.usage });
+      }
       case '/review': {
         const result = await this.reviewer.review({ base: arg || 'main', worktree: true, model });
         return done({ answer: renderMarkdown(result).replace(/^<!--.*-->\n/, ''), model: result.model, usage: result.usage });
@@ -149,7 +160,8 @@ export class DevAssistantService implements OnApplicationBootstrap {
     const [git, found, toolset] = await Promise.all([
       this.gitContext(),
       this.docs.search(asked, TOP_K, { groups: DOC_GROUPS }),
-      this.git.toolset().catch(() => undefined),
+      // Read-only: /help answers questions, it never writes files (that's /task).
+      this.git.toolset((t) => t.annotations?.readOnlyHint === true && t.name !== 'get_file_raw').catch(() => undefined),
     ]);
     // Found excerpts first, then the README overview unless it was found anyway.
     const ids = new Set(found.map((h) => h.metadata.chunk_id));

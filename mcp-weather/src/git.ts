@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -43,7 +44,9 @@ function checkRef(ref: string): string {
 
 /** Repository-relative path, refusing anything that climbs out of it. */
 function checkPath(p: string): string {
-  const clean = path.posix.normalize(p.trim().replace(/\\/g, '/')).replace(/^\.\/?/, '').replace(/\/$/, '');
+  // Only a leading "./" is dropped — "../x" must stay "../x" so it's rejected below.
+  const clean = path.posix.normalize(p.trim().replace(/\\/g, '/')).replace(/^(\.\/)+/, '').replace(/\/$/, '');
+  if (clean === '.') return '';
   if (clean.startsWith('..') || path.posix.isAbsolute(clean)) throw new GitError(`Путь вне репозитория: ${p}`);
   return clean;
 }
@@ -259,7 +262,126 @@ export function createGitServer(): McpServer {
     },
   );
 
+  server.registerTool(
+    'search_code',
+    {
+      title: 'Поиск по файлам проекта',
+      description:
+        'Ищет текст или регулярное выражение во всех файлах проекта (git grep: отслеживаемые и новые неигнорируемые файлы) и возвращает совпадения «путь:строка: текст». Используйте, чтобы найти, где используется функция, компонент, API, переменная окружения. Сузьте путём (path) или маской файлов (glob, например "*.ts").',
+      inputSchema: {
+        pattern: z.string().min(1).describe('Текст или регулярное выражение (POSIX extended, как grep -E)'),
+        regex: z.boolean().default(false).describe('true — pattern это регулярное выражение, иначе ищется как есть'),
+        path: z.string().optional().describe('Каталог или файл, например "backend/src"'),
+        glob: z.string().optional().describe('Маска файлов, например "*.ts" или "*.md"'),
+        ignore_case: z.boolean().default(false),
+        max_results: z.number().int().min(1).max(500).default(100),
+      },
+      annotations: readOnly,
+    },
+    async ({ pattern, regex, path: p, glob, ignore_case, max_results }) => {
+      try {
+        const args = ['grep', '-n', '-I', '--untracked', '--no-color', regex ? '-E' : '-F'];
+        if (ignore_case) args.push('-i');
+        args.push('-e', pattern, '--');
+        const spec = p ? checkPath(p) : '';
+        // Plain git pathspecs: "*" crosses directories, so "backend/src/*.ts" matches nested files too.
+        if (glob || spec) args.push(glob ? (spec ? `${spec}/${glob}` : glob) : spec);
+        const out = await run('git', ['-C', REPO_DIR, '--no-pager', ...args], { maxBuffer: 32 * 1024 * 1024, timeout: 15_000 }).then(
+          (r) => r.stdout,
+          (e: { code?: number; stderr?: string; message: string }) => {
+            // Exit code 1 with nothing on stderr: no matches.
+            if (e.code === 1 && !e.stderr?.trim()) return '';
+            throw new GitError(e.stderr?.trim() || e.message);
+          },
+        );
+        const lines = out.split('\n').filter(Boolean).filter((l) => !/(^|\/)(package-lock\.json|.*\.min\.js):/.test(l));
+        if (!lines.length) return textResult(`Ничего не найдено: «${pattern}»${spec ? ` в ${spec}` : ''}${glob ? ` (${glob})` : ''}.`, { total: 0, files: 0 });
+        const files = new Set(lines.map((l) => l.split(':')[0]));
+        const shown = lines.slice(0, max_results).map((l) => (l.length > 300 ? `${l.slice(0, 300)}…` : l));
+        const more = lines.length > shown.length ? `\n… ещё ${lines.length - shown.length} совпадений — сузьте поиск` : '';
+        return textResult(`${lines.length} совпадений в ${files.size} файлах:\n${shown.join('\n')}${more}`, { total: lines.length, files: files.size });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_file_raw',
+    {
+      title: 'Файл целиком (для программ)',
+      description: 'Текущее содержимое файла рабочей копии без нумерации строк и его sha1 — для клиентов, которые готовят изменения и diff. exists: false, если файла нет.',
+      inputSchema: { path: z.string() },
+      annotations: readOnly,
+    },
+    async ({ path: p }) => {
+      try {
+        const file = checkPath(p);
+        const full = path.join(REPO_DIR, file);
+        const real = await fs.realpath(full).catch(() => undefined);
+        if (real && !real.startsWith((await fs.realpath(REPO_DIR)) + path.sep)) throw new GitError(`Путь вне репозитория: ${file}`);
+        const content = real ? await fs.readFile(real, 'utf8') : undefined;
+        return textResult(content === undefined ? `${file}: нет такого файла` : `${file}: ${content.length} символов`, {
+          path: file,
+          exists: content !== undefined,
+          content: content ?? '',
+          sha1: content === undefined ? 'new' : sha1(content),
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'write_project_file',
+    {
+      title: 'Записать файл проекта',
+      description:
+        'Создаёт или перезаписывает файл в рабочей копии проекта (Day 34). expected_sha1 — sha1 текущего содержимого, которое видел автор изменения: если файл с тех пор изменился, запись отклоняется. Нельзя писать в .git, node_modules, сборку и файлы .env (кроме .env.example).',
+      inputSchema: {
+        path: z.string(),
+        content: z.string().max(400_000),
+        expected_sha1: z.string().optional().describe('sha1 содержимого до изменения; "new" — файл должен не существовать'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ path: p, content, expected_sha1 }) => {
+      try {
+        const file = checkPath(p);
+        if (!file || /(^|\/)(\.git|node_modules|dist|\.next|build)(\/|$)/.test(file) || /(^|\/)\.env(?!\.example$)[^/]*$/.test(file)) {
+          throw new GitError(`Запись в ${file || '(корень)'} запрещена`);
+        }
+        const full = path.join(REPO_DIR, file);
+        const root = await fs.realpath(REPO_DIR);
+        // The nearest existing parent must resolve inside the repository (no symlinked escapes).
+        let parent = path.dirname(full);
+        while (!(await fs.stat(parent).catch(() => null))) parent = path.dirname(parent);
+        const realParent = await fs.realpath(parent);
+        if (realParent !== root && !realParent.startsWith(root + path.sep)) throw new GitError(`Путь вне репозитория: ${file}`);
+        const before = await fs.readFile(full, 'utf8').catch(() => undefined);
+        if (expected_sha1) {
+          const actual = before === undefined ? 'new' : sha1(before);
+          if (actual !== expected_sha1) {
+            throw new GitError(`Конфликт: ${file} изменился после подготовки изменения (ожидался ${expected_sha1}, сейчас ${actual}). Подготовьте изменение заново.`);
+          }
+        }
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, content);
+        return textResult(`${before === undefined ? 'Создан' : 'Записан'} ${file} (${content.length} символов).`, {
+          path: file,
+          created: before === undefined,
+          sha1: sha1(content),
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
   return server;
 }
+
+export const sha1 = (s: string) => createHash('sha1').update(s).digest('hex');
 
 export { REPO_DIR };

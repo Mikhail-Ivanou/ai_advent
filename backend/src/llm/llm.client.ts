@@ -84,6 +84,8 @@ export interface AskOptions {
    * instructions.
    */
   systemPrompt?: string;
+  /** Overrides LLM_MAX_TOOL_ROUNDS for this call (Day 34: the file agent explores and edits for longer). */
+  maxToolRounds?: number;
   /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
   tools?: LlmToolset;
 }
@@ -335,8 +337,9 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
   let usage: LlmUsage | undefined;
   let data: any;
 
+  const maxRounds = Math.max(2, options.maxToolRounds ?? MAX_TOOL_ROUNDS);
   for (let round = 1; ; round++) {
-    if (tools && round === MAX_TOOL_ROUNDS) requestBody.tool_choice = 'none';
+    if (tools && round === maxRounds) requestBody.tool_choice = 'none';
     // Snapshot per round: `messages` keeps growing with tool results, and the
     // log must show exactly what each individual call sent.
     const body = { ...requestBody, messages: [...messages] };
@@ -359,7 +362,7 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
 
     const message = data.choices?.[0]?.message;
     const calls: any[] = tools && Array.isArray(message?.tool_calls) ? message.tool_calls : [];
-    if (calls.length === 0 || round === MAX_TOOL_ROUNDS) break;
+    if (calls.length === 0 || round === maxRounds) break;
 
     messages.push({
       role: 'assistant',
