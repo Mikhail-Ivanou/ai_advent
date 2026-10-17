@@ -45,6 +45,7 @@ export const COMMANDS: { name: string; args?: string; description: string }[] = 
   { name: '/files', args: '[каталог]', description: 'структура проекта: каталоги и число файлов (MCP)' },
   { name: '/diff', args: '[ветка]', description: 'изменённые файлы: рабочая копия или ветка относительно указанной (MCP)' },
   { name: '/review', args: '[ветка]', description: 'AI-ревью изменений текущей ветки и рабочей копии относительно ветки (по умолчанию main): баги, архитектура, рекомендации' },
+  { name: '/log', args: '[n]', description: 'последние n коммитов (MCP)' },
   { name: '/docs', description: 'что проиндексировано для RAG' },
   { name: '/reindex', description: 'переиндексировать документацию' },
 ];
@@ -115,6 +116,13 @@ export class DevAssistantService implements OnApplicationBootstrap {
         const result = await this.reviewer.review({ base: arg || 'main', worktree: true, model });
         return done({ answer: renderMarkdown(result).replace(/^<!--.*-->\n/, ''), model: result.model, usage: result.usage });
       }
+      case '/log': {
+        const limit = parseInt(arg) || 500;
+        const log = await this.git.call('git_log', { limit });
+        // Skip the header line of the tool output.
+        const commits = log.text.split('\n').slice(1, limit);
+        return done({ answer: `${countWords(commits.join(' '))} слов в ${commits.length} коммитах:\n${commits.join('\n')}` });
+      }
       case '/docs': {
         const s = await this.docs.ensure();
         const docs = s.documents.filter((d) => d.group !== 'code');
@@ -126,7 +134,8 @@ export class DevAssistantService implements OnApplicationBootstrap {
         });
       }
       case '/reindex': {
-        const s = await this.docs.ensure(true);
+        this.docs.ensure(true);
+        const s = this.docs.stats!;
         return done({
           answer: `Переиндексировано за ${s.buildMs} мс: ${s.documents.length} файлов, ${s.chunks} чанков. Заново посчитаны эмбеддинги: ${s.reembedded.length ? s.reembedded.join(', ') : 'ничего не менялось'}.`,
         });
@@ -219,4 +228,9 @@ function summarizeDocs(s: IndexStats) {
       chunks: s.documents.filter((d) => d.group === 'code').reduce((n, d) => n + d.chunks, 0),
     },
   };
+}
+
+/** Words of a text, lowercased, for quick statistics. */
+function countWords(text: string): number {
+  return text.toLowerCase().replace(/ё/g, 'е').match(/[\p{L}\d]+/gu)?.length ?? 0;
 }

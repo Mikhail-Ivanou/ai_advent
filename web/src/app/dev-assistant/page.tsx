@@ -77,6 +77,10 @@ export default function DevAssistantPage() {
   }, []);
 
   useEffect(loadStatus, [loadStatus]);
+  // Keep the branch badge fresh while the page is open.
+  useEffect(() => {
+    setInterval(loadStatus, 5000);
+  }, [loadStatus]);
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [entries, busy]);
