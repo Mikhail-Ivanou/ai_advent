@@ -7,6 +7,7 @@ import { FILES_DIR, Pipeline, signFilename } from './pipeline.js';
 import { Scheduler } from './scheduler.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createResearchServer, createSchedulerServer, createWeatherServer } from './server.js';
+import { createGitServer } from './git.js';
 
 const PORT = Number(process.env.PORT ?? 3002);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -46,6 +47,8 @@ const SERVERS: Record<string, () => McpServer> = {
   weather: () => createWeatherServer(),
   scheduler: () => createSchedulerServer(scheduler),
   research: () => createResearchServer(pipeline),
+  // Day 31: the project's git repository for the developer assistant.
+  git: () => createGitServer(),
 };
 
 // Stateless Streamable HTTP: every POST gets a fresh server + transport, so

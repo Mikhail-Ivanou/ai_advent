@@ -32,6 +32,9 @@ export default function Home() {
       <Link href="/order-extract" className="text-pine underline">
         Local LLM: e-mail → order JSON, settings compared →
       </Link>
+      <Link href="/dev-assistant" className="text-pine underline">
+        Developer assistant: /help about this project (RAG + MCP git) →
+      </Link>
     </main>
   );
 }

@@ -71,6 +71,13 @@ export interface AskOptions {
   invariants?: string;
   /** Excerpts retrieved from the indexed documents for this question, numbered [1]..[n] (Day 21); the answer must quote them (Day 24). */
   ragContext?: string;
+  /**
+   * Developer assistant (Day 31): the project's live git state and excerpts of
+   * its own documentation (README, docs/, API and data schemas), numbered [n].
+   * Unlike `ragContext` there is no strict quote format — the model may also
+   * look things up with the project's git tools.
+   */
+  projectContext?: string;
   /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
   tools?: LlmToolset;
 }
@@ -278,6 +285,14 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
           {
             role: 'system',
             content: `Excerpts retrieved from the user's indexed documents (RAG) as relevant to the question below, numbered [n], most relevant first.\n${GROUNDED_FORMAT_INSTRUCTIONS}\n\n${options.ragContext}`,
+          },
+        ]
+      : []),
+    ...(options.projectContext
+      ? [
+          {
+            role: 'system',
+            content: `You are the developer assistant of this software project. Answer the developer's question about the project — its structure, modules, how to run and configure it, its API and data — using the project context below: the current git state and documentation excerpts numbered [n], most relevant first. Rely on the excerpts first and cite the ones you used as [n] right in the text. When the excerpts are not enough (exact file names, code, what changed on the branch), use the project's git tools (file list, read file, diff, log) instead of guessing, and name the files you looked at. Never name a file or directory that does not appear in the excerpts or in a tool result — if you are about to point to code, first confirm the path with the file-list tool. Be concrete: give paths, commands, endpoint names. If neither the docs nor the tools give the answer, say so plainly.\n\n${options.projectContext}`,
           },
         ]
       : []),

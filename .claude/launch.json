@@ -4,10 +4,23 @@
     {
       "name": "web-dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["next", "dev"],
+      "runtimeArgs": [
+        "next",
+        "dev"
+      ],
       "cwd": "web",
       "port": 3003,
       "autoPort": true
+    },
+    {
+      "name": "backend-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "start:dev"
+      ],
+      "cwd": "backend",
+      "port": 3001
     }
   ]
 }

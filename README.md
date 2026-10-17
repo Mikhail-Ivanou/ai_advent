@@ -27,7 +27,7 @@ Run both apps in separate terminals:
 ```bash
 npm run dev:backend   # http://localhost:3001
 npm run dev:web        # http://localhost:3000
-npm run dev:mcp-weather  # http://localhost:3002/mcp/{weather,scheduler,research} — MCP servers
+npm run dev:mcp-weather  # http://localhost:3002/mcp/{weather,scheduler,research,git} — MCP servers
 npm run dev:llm-gateway  # http://0.0.0.0:8088/v1 — local LLM as a private network service
 ```
 
@@ -281,3 +281,38 @@ fields against the expected order, whether the prompt fit the window or the
 answer hit max tokens, time, speed and the model's memory.
 
 Result: [docs/day29-local-optimization.md](docs/day29-local-optimization.md).
+
+## Day 31 — developer assistant (`/help` about this project)
+
+http://localhost:3000/dev-assistant (backend: `src/dev-assistant`,
+`POST /dev-assistant/ask {message}`), or in the terminal:
+
+```bash
+npm run dev:mcp-weather                                        # the git MCP server must be up
+npm run dev-help --workspace=backend                           # interactive, the prompt shows the branch
+npm run dev-help --workspace=backend -- "/help где живёт RAG-пайплайн?"
+```
+
+- **RAG over the project's own docs** (`project-docs.ts`): every `README.md`,
+  everything in `docs/`, the backend HTTP API generated from the Nest
+  controllers (method, path, handler signature, doc comment — can't go stale)
+  and the data schemas (`*.types.ts`). Structural chunks, the same local e5
+  embeddings, hybrid search (vectors + BM25, RRF). Index in
+  `backend/data/dev-assistant/index.json`; on start only changed files are
+  re-embedded (by content hash), `/reindex` does it on demand.
+- **MCP git server** (`mcp-weather/src/git.ts`, `POST /mcp/git`), read-only:
+  `git_current_branch`, `git_status`, `git_list_files`, `git_diff`,
+  `git_log`, `read_project_file`. The repository is the one the server runs
+  from (`GIT_REPO_DIR` overrides it).
+- **`/help <question>`**: branch + uncommitted changes (MCP) and the top-6
+  documentation excerpts go to the model as project context; the git tools
+  stay available for what the docs don't say (exact files, code, the
+  branch's diff). The answer cites excerpts as `[n]`; the UI shows which
+  excerpts were cited and every MCP call. `/help` alone = project overview.
+- Shortcuts without the LLM: `/branch`, `/status`, `/files [dir]`,
+  `/diff [base]`, `/docs`, `/reindex`. Plain text is treated as `/help`.
+
+Env (backend): `DEV_ASSISTANT_MCP_URL` (default `http://localhost:3002/mcp/git`),
+`DEV_ASSISTANT_MCP_TOKEN` (falls back to `MCP_AUTH_TOKEN`), `DEV_ASSISTANT_MODEL`
+(default `LLM_MODEL`), `DEV_ASSISTANT_REPO_DIR` (default: the repo root).
+See [docs/day31-dev-assistant.md](docs/day31-dev-assistant.md).

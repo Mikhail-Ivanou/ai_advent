@@ -1,6 +1,6 @@
 # mcp-weather
 
-One process that exposes **three separate MCP servers**, each at its own
+One process that exposes **four separate MCP servers**, each at its own
 address. The app registers each one as its own server, so the agent has to
 pick a tool across servers and route each call to the right one.
 
@@ -9,8 +9,9 @@ pick a tool across servers and route each call to the right one.
 | `advent-weather` | `POST /mcp/weather` | `get_weather_forecast` |
 | `advent-scheduler` | `POST /mcp/scheduler` | `schedule_task`, `list_scheduled_tasks`, `get_task_summary`, `set_task_status`, `get_task_events` |
 | `advent-research` | `POST /mcp/research` | `search`, `summarize`, `save_to_file`, `run_pipeline` |
+| `advent-git` | `POST /mcp/git` | `git_current_branch`, `git_status`, `git_list_files`, `git_diff`, `git_log`, `read_project_file` — read-only view of the project repository (`GIT_REPO_DIR`, default: the repo this server runs from), used by the developer assistant (Day 31) |
 
-Transport: Streamable HTTP, stateless. All three share one bearer token
+Transport: Streamable HTTP, stateless. All of them share one bearer token
 (`MCP_AUTH_TOKEN`); it's the only secret. The weather comes from
 [Open-Meteo](https://open-meteo.com), which is free and needs no key.
 `GET /health` is a plain health check, and `GET /files/<name>` downloads the
@@ -95,7 +96,7 @@ This is the default setup now (the h3llo.cloud VM is gone).
 
 ```bash
 cp mcp-weather/.env.example mcp-weather/.env   # MCP_AUTH_TOKEN can stay empty locally
-npm run dev:mcp-weather                         # http://localhost:3002/mcp/{weather,scheduler,research}
+npm run dev:mcp-weather                         # http://localhost:3002/mcp/{weather,scheduler,research,git}
 ```
 
 Or in Docker, with the data on a volume: `cd mcp-weather && docker compose up -d --build`.
