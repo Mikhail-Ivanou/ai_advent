@@ -1,10 +1,11 @@
 import { ReactNode } from 'react';
 
 // Day 32: renders the AI code review (backend/src/review/render.ts) in the
-// developer assistant. Only the subset that report uses: ##/### headings,
-// "> " quotes, "- " bullets with indented continuation lines, **bold**,
-// _italic_, `code`, [links](url) and one <details><summary> block. Built as
-// React elements — no HTML from the model ever reaches the DOM.
+// developer assistant; Day 33: also the support assistant's answers. Only a
+// small subset: ##/### headings, "> " quotes, "- " bullets with indented
+// continuation lines, "1." numbered lists, "---" rules, **bold**, _italic_,
+// `code`, [links](url) and <details><summary> blocks. Built as React
+// elements — no HTML from the model ever reaches the DOM.
 
 const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|(?<![\w])_[^_]+_(?![\w]))/g;
 
@@ -79,10 +80,37 @@ function blocks(lines: string[]): ReactNode[] {
       );
       continue;
     }
-    if (line.startsWith('- ')) {
+    if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
+      out.push(<hr key={i} className="my-2 border-black/10" />);
+      continue;
+    }
+    if (/^\d+\.\s/.test(line)) {
       const items: string[][] = [];
-      for (; i < lines.length && (lines[i].startsWith('- ') || lines[i].startsWith('  ')); i++) {
-        if (lines[i].startsWith('- ')) items.push([lines[i].slice(2)]);
+      for (; i < lines.length && (/^\d+\.\s/.test(lines[i]) || /^\s{2,}\S/.test(lines[i])); i++) {
+        if (/^\d+\.\s/.test(lines[i])) items.push([lines[i].replace(/^\d+\.\s+/, '')]);
+        else items[items.length - 1]?.push(lines[i].trim());
+      }
+      i--;
+      out.push(
+        <ol key={i} className="my-1 list-decimal space-y-1 pl-5">
+          {items.map(([head, ...rest], j) => (
+            <li key={j}>
+              {inline(head)}
+              {rest.map((r, k) => (
+                <div key={k} className="text-[0.95em] text-[#3c3c3c]">
+                  {inline(r)}
+                </div>
+              ))}
+            </li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+    if (line.startsWith('- ') || line.startsWith('* ')) {
+      const items: string[][] = [];
+      for (; i < lines.length && (/^[-*] /.test(lines[i]) || lines[i].startsWith('  ')); i++) {
+        if (/^[-*] /.test(lines[i])) items.push([lines[i].slice(2)]);
         else items[items.length - 1]?.push(lines[i].trim());
       }
       i--;
@@ -109,6 +137,11 @@ function blocks(lines: string[]): ReactNode[] {
     );
   }
   return out;
+}
+
+/** Also exported under a neutral name for other assistants' answers. */
+export function Markdown({ text }: { text: string }) {
+  return <div className="text-sm">{blocks(text.split('\n'))}</div>;
 }
 
 export function ReviewMarkdown({ text }: { text: string }) {

@@ -27,7 +27,7 @@ Run both apps in separate terminals:
 ```bash
 npm run dev:backend   # http://localhost:3001
 npm run dev:web        # http://localhost:3000
-npm run dev:mcp-weather  # http://localhost:3002/mcp/{weather,scheduler,research,git} — MCP servers
+npm run dev:mcp-weather  # http://localhost:3002/mcp/{weather,scheduler,research,git,crm} — MCP servers
 npm run dev:llm-gateway  # http://0.0.0.0:8088/v1 — local LLM as a private network service
 ```
 
@@ -356,3 +356,46 @@ The action needs the secret `LLM_API_KEY`, plus optional variables
 `REVIEW_FAIL_ON` (`high` or `medium`, to fail the check on such bugs).
 Locally the model is `--model`, else `REVIEW_MODEL`, else `LLM_MODEL`.
 See [docs/day32-code-review.md](docs/day32-code-review.md).
+
+## Day 33 — support assistant
+
+http://localhost:3000/support (backend: `src/support`, `POST /support/ask`).
+The "product" is Advent LLM itself: llm-gateway + the LLM Chat iOS app,
+with real API keys, rate limits and error codes.
+
+- **CRM over MCP** (`mcp-weather/src/crm.ts`, `POST /mcp/crm`): users
+  (plan, subscription, devices with the last 4 characters of their key and
+  its status), tickets with the thread and staff notes, and the gateway's
+  technical events per device (status and error code, no message text).
+  Seed in `mcp-weather/crm/seed.json`; replies written through the tools go
+  to `mcp-weather/data/crm.json` (delete it and restart to reset the demo).
+  Tools: `crm_find_user`, `crm_list_users`, `crm_get_user`,
+  `crm_list_tickets`, `crm_get_ticket`, `crm_get_gateway_events`,
+  `crm_create_ticket`, `crm_add_ticket_reply` (the model gets only the
+  read tools for one user; creating tickets and the user list are for the UI).
+- **RAG** over the user-facing FAQ (`docs/support/faq.md`) and the product
+  docs (llm-gateway and iOS READMEs), its own index in `data/support`.
+  The search query is the question plus what the CRM shows (error codes,
+  key status), so "почему не работает авторизация" finds the paragraph
+  about *this* user's cause.
+- **Answer**: the ticket, the user's card, their other tickets and gateway
+  events are read first and go to the model with the FAQ excerpts; it may
+  call the CRM's read tools for more. It names the cause from the data (a
+  revoked key on one device, an expired trial, no requests reaching the
+  server at all, a rate limit), gives steps citing the FAQ `[n]`, never
+  quotes staff notes or full keys, and says whether a human is needed.
+  "Отправить в тикет" writes the (editable) answer into the ticket via MCP.
+- **"+ Новое обращение"** simulates an incoming request: pick a user, type
+  a message or take a template; the ticket is created in the CRM
+  (`crm_create_ticket`), opened, and its question is ready to ask.
+
+```bash
+npm run dev:mcp-weather                                     # the CRM MCP server
+npm run support --workspace=backend -- --tickets
+npm run support --workspace=backend -- --ticket T-1041 "Почему не работает авторизация?"
+npm run support --workspace=backend -- --user olga.kim@example.com "Какой у меня лимит?"
+```
+
+Env (backend): `SUPPORT_CRM_MCP_URL` (default `http://localhost:3002/mcp/crm`),
+`SUPPORT_CRM_MCP_TOKEN` (falls back to `MCP_AUTH_TOKEN`). See
+[docs/day33-support-assistant.md](docs/day33-support-assistant.md).

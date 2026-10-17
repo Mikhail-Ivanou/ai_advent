@@ -1,0 +1,181 @@
+{
+  "plans": {
+    "trial": { "name": "Пробный", "devices": 1, "rate_limit_per_minute": 20, "term": "14 дней" },
+    "basic": { "name": "Базовый", "devices": 2, "rate_limit_per_minute": 20, "term": "помесячно" },
+    "team": { "name": "Команда", "devices": 10, "rate_limit_per_minute": 60, "term": "помесячно" }
+  },
+  "users": [
+    {
+      "id": "U-001",
+      "name": "Анна Петрова",
+      "email": "anna.petrova@example.com",
+      "company": "Студия «Север»",
+      "plan": "team",
+      "subscription": { "status": "active", "paid_until": "2026-11-05" },
+      "created_at": "2026-06-11",
+      "devices": [
+        { "client": "anna-iphone", "device": "iPhone 15", "key_last4": "a91f", "key_status": "revoked", "key_issued_at": "2026-06-11", "key_revoked_at": "2026-10-14", "last_ok_at": "2026-10-14T09:12:00+03:00" },
+        { "client": "anna-mac", "device": "MacBook Air (скрипты)", "key_last4": "7c2e", "key_status": "active", "key_issued_at": "2026-10-14", "last_ok_at": "2026-10-17T10:41:00+03:00" }
+      ],
+      "notes": "Перевыпуск ключа 2026-10-14 по T-1032: старый ключ попал на скриншот в общем чате. Новый ключ 7c2e выдан один на все устройства."
+    },
+    {
+      "id": "U-002",
+      "name": "Борис Смирнов",
+      "email": "boris.smirnov@example.com",
+      "company": null,
+      "plan": "trial",
+      "subscription": { "status": "expired", "trial_ends": "2026-10-12" },
+      "created_at": "2026-09-28",
+      "devices": [
+        { "client": "boris-iphone", "device": "iPhone 13 mini", "key_last4": "3d08", "key_status": "disabled", "key_issued_at": "2026-09-28", "disabled_reason": "trial_expired", "last_ok_at": "2026-10-12T22:47:00+03:00" }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "U-003",
+      "name": "Карина Лебедева",
+      "email": "karina.l@example.com",
+      "company": "ООО «Квант»",
+      "plan": "basic",
+      "subscription": { "status": "active", "paid_until": "2026-10-30" },
+      "created_at": "2026-08-20",
+      "devices": [
+        { "client": "karina-iphone", "device": "iPhone 16", "key_last4": "e512", "key_status": "active", "key_issued_at": "2026-08-20", "last_ok_at": "2026-10-02T18:05:00+03:00" }
+      ],
+      "notes": "Пользуется из офиса «Квант» (сеть 192.168.10.0/24). VPN не заказывала."
+    },
+    {
+      "id": "U-004",
+      "name": "Дмитрий Орлов",
+      "email": "d.orlov@example.com",
+      "company": null,
+      "plan": "basic",
+      "subscription": { "status": "active", "paid_until": "2026-11-18" },
+      "created_at": "2026-07-03",
+      "devices": [
+        { "client": "dmitry-iphone", "device": "iPhone 14 Pro", "key_last4": "51bb", "key_status": "active", "key_issued_at": "2026-07-03", "last_ok_at": "2026-10-15T08:30:00+03:00" },
+        { "client": "dmitry-script", "device": "Python-скрипт на ноутбуке", "key_last4": "0f4a", "key_status": "active", "key_issued_at": "2026-10-10", "last_ok_at": "2026-10-17T11:02:00+03:00" }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "U-005",
+      "name": "Ольга Ким",
+      "email": "olga.kim@example.com",
+      "company": "Юридическое бюро «Ким и партнёры»",
+      "plan": "team",
+      "subscription": { "status": "active", "paid_until": "2026-12-01" },
+      "created_at": "2026-05-15",
+      "devices": [
+        { "client": "olga-iphone", "device": "iPhone 15 Pro", "key_last4": "c3a7", "key_status": "active", "key_issued_at": "2026-05-15", "last_ok_at": "2026-10-17T09:58:00+03:00" }
+      ],
+      "notes": "Работает с длинными договорами, VIP-клиент."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1032",
+      "user_id": "U-001",
+      "subject": "Ключ попал на скриншот — нужен новый",
+      "status": "resolved",
+      "priority": "high",
+      "channel": "email",
+      "created_at": "2026-10-14T08:50:00+03:00",
+      "messages": [
+        { "from": "user", "at": "2026-10-14T08:50:00+03:00", "text": "Случайно отправила скриншот с ключом в общий чат. Можно новый ключ?" },
+        { "from": "agent", "at": "2026-10-14T09:15:00+03:00", "text": "Анна, ключ перевыпустили. Новый ключ — в защищённом сообщении. Старый ключ больше не работает: замените его в настройках всех устройств." }
+      ],
+      "internal_notes": ["Отозван a91f, выдан 7c2e. Пользователь подтвердил получение."]
+    },
+    {
+      "id": "T-1041",
+      "user_id": "U-001",
+      "subject": "Почему не работает авторизация?",
+      "status": "open",
+      "priority": "normal",
+      "channel": "app",
+      "created_at": "2026-10-17T10:05:00+03:00",
+      "messages": [
+        { "from": "user", "at": "2026-10-17T10:05:00+03:00", "text": "Почему не работает авторизация? На телефоне пишет «Неверный API-ключ», хотя на ноутбуке всё работает. Ничего не меняла." }
+      ],
+      "internal_notes": []
+    },
+    {
+      "id": "T-1042",
+      "user_id": "U-002",
+      "subject": "Не работает авторизация",
+      "status": "open",
+      "priority": "normal",
+      "channel": "app",
+      "created_at": "2026-10-16T19:20:00+03:00",
+      "messages": [
+        { "from": "user", "at": "2026-10-16T19:20:00+03:00", "text": "Здравствуйте! Почему не работает авторизация? Несколько дней назад всё было нормально, теперь приложение пишет, что ключ неверный. Ключ не трогал." }
+      ],
+      "internal_notes": []
+    },
+    {
+      "id": "T-1043",
+      "user_id": "U-003",
+      "subject": "Не могу войти в приложение",
+      "status": "open",
+      "priority": "normal",
+      "channel": "email",
+      "created_at": "2026-10-16T21:40:00+03:00",
+      "messages": [
+        { "from": "user", "at": "2026-10-16T21:40:00+03:00", "text": "Не работает авторизация. Дома открываю LLM Chat — крутится и потом «Не удалось подключиться к серверу». В настройках поменяла адрес на http://localhost:8088, как было в инструкции, не помогло." }
+      ],
+      "internal_notes": []
+    },
+    {
+      "id": "T-1044",
+      "user_id": "U-004",
+      "subject": "Скрипт получает ошибки 429",
+      "status": "open",
+      "priority": "normal",
+      "channel": "email",
+      "created_at": "2026-10-17T11:10:00+03:00",
+      "messages": [
+        { "from": "user", "at": "2026-10-17T11:10:00+03:00", "text": "Мой скрипт обрабатывает отзывы пачкой и через полминуты начинает получать 429. Это авторизация отваливается? Как сделать, чтобы работало?" }
+      ],
+      "internal_notes": []
+    },
+    {
+      "id": "T-1045",
+      "user_id": "U-005",
+      "subject": "Модель перестала отвечать в длинном чате",
+      "status": "pending",
+      "priority": "high",
+      "channel": "app",
+      "created_at": "2026-10-17T10:02:00+03:00",
+      "messages": [
+        { "from": "user", "at": "2026-10-17T10:02:00+03:00", "text": "Разбираю договор в одном чате с утра, теперь на каждое сообщение пишет «Диалог не помещается в контекст». Вчера такого не было. Что сломалось?" }
+      ],
+      "internal_notes": ["VIP: ответить в течение часа."]
+    }
+  ],
+  "events": [
+    { "at": "2026-10-14T09:12:00+03:00", "client": "anna-iphone", "key_last4": "a91f", "status": 200, "code": "ok" },
+    { "at": "2026-10-14T09:16:00+03:00", "client": "anna-mac", "key_last4": "7c2e", "status": 200, "code": "ok" },
+    { "at": "2026-10-15T08:02:00+03:00", "client": "anna-iphone", "key_last4": "a91f", "status": 401, "code": "invalid_api_key" },
+    { "at": "2026-10-16T13:40:00+03:00", "client": "anna-iphone", "key_last4": "a91f", "status": 401, "code": "invalid_api_key" },
+    { "at": "2026-10-17T09:58:00+03:00", "client": "anna-iphone", "key_last4": "a91f", "status": 401, "code": "invalid_api_key", "count": 6 },
+    { "at": "2026-10-17T10:41:00+03:00", "client": "anna-mac", "key_last4": "7c2e", "status": 200, "code": "ok", "count": 12 },
+
+    { "at": "2026-10-12T22:47:00+03:00", "client": "boris-iphone", "key_last4": "3d08", "status": 200, "code": "ok" },
+    { "at": "2026-10-13T08:15:00+03:00", "client": "boris-iphone", "key_last4": "3d08", "status": 401, "code": "invalid_api_key", "detail": "key disabled: trial_expired" },
+    { "at": "2026-10-16T19:12:00+03:00", "client": "boris-iphone", "key_last4": "3d08", "status": 401, "code": "invalid_api_key", "detail": "key disabled: trial_expired", "count": 4 },
+
+    { "at": "2026-10-02T18:05:00+03:00", "client": "karina-iphone", "key_last4": "e512", "status": 200, "code": "ok", "source_ip": "192.168.10.24" },
+
+    { "at": "2026-10-15T08:30:00+03:00", "client": "dmitry-iphone", "key_last4": "51bb", "status": 200, "code": "ok" },
+    { "at": "2026-10-17T11:01:00+03:00", "client": "dmitry-script", "key_last4": "0f4a", "status": 200, "code": "ok", "count": 20 },
+    { "at": "2026-10-17T11:01:40+03:00", "client": "dmitry-script", "key_last4": "0f4a", "status": 429, "code": "rate_limit_exceeded", "detail": "20 requests/min, retry after 21 s", "count": 27 },
+    { "at": "2026-10-17T11:02:00+03:00", "client": "dmitry-script", "key_last4": "0f4a", "status": 200, "code": "ok", "count": 20 },
+    { "at": "2026-10-17T11:02:40+03:00", "client": "dmitry-script", "key_last4": "0f4a", "status": 429, "code": "rate_limit_exceeded", "detail": "20 requests/min, retry after 19 s", "count": 31 },
+
+    { "at": "2026-10-16T17:20:00+03:00", "client": "olga-iphone", "key_last4": "c3a7", "status": 200, "code": "ok", "count": 9 },
+    { "at": "2026-10-17T09:41:00+03:00", "client": "olga-iphone", "key_last4": "c3a7", "status": 200, "code": "ok", "detail": "prompt_tokens 7650", "count": 14 },
+    { "at": "2026-10-17T09:58:00+03:00", "client": "olga-iphone", "key_last4": "c3a7", "status": 400, "code": "context_length_exceeded", "detail": "prompt_tokens 8410 > max_context_tokens 8192", "count": 5 }
+  ]
+}

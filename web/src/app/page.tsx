@@ -35,6 +35,9 @@ export default function Home() {
       <Link href="/dev-assistant" className="text-pine underline">
         Developer assistant: /help about this project (RAG + MCP git) →
       </Link>
+      <Link href="/support" className="text-pine underline">
+        Support assistant: tickets from the CRM (MCP) + FAQ (RAG) →
+      </Link>
     </main>
   );
 }

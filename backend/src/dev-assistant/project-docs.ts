@@ -24,7 +24,7 @@ const STRUCTURAL = { maxSize: 1400, minSize: 300 };
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'data', 'build', 'img']);
 
 /** What a document of the corpus is, for the UI and the model. */
-export type ProjectDocGroup = 'readme' | 'docs' | 'api' | 'schema' | 'ios' | 'code';
+export type ProjectDocGroup = 'readme' | 'docs' | 'api' | 'schema' | 'ios' | 'code' | 'faq';
 
 /** What /help searches: everything but the source code. */
 export const DOC_GROUPS: ProjectDocGroup[] = ['readme', 'docs', 'api', 'schema', 'ios'];
@@ -179,8 +179,28 @@ const slug = (p: string) => p.replace(/[^\w.-]+/g, '_');
 /** What gets embedded and matched lexically: the file path tells "backend README" from "llm-gateway README". */
 const searchable = (c: IndexedChunk) => `${c.metadata.file}\n${c.text}`;
 
+export interface ProjectDocsIndexOptions {
+  /** Where the index is stored (default data/dev-assistant/index.json). */
+  indexPath?: string;
+  /** What to index (default: the whole project corpus, collectProjectDocs). */
+  collect?: () => Promise<ProjectDoc[]>;
+}
+
+/** Reads repository files into a corpus, for indexes with a fixed list of files (e.g. support's FAQ). */
+export async function readRepoFiles(files: { path: string; group: ProjectDocGroup }[]): Promise<ProjectDoc[]> {
+  return Promise.all(files.map(async (f) => ({ ...f, content: await fs.readFile(path.join(REPO_DIR, f.path), 'utf8') })));
+}
+
 export class ProjectDocsIndex {
   private index?: ProjectIndexFile;
+  private readonly indexPath: string;
+  private readonly collect: () => Promise<ProjectDoc[]>;
+
+  constructor(options: ProjectDocsIndexOptions = {}) {
+    this.indexPath = options.indexPath ?? INDEX_PATH;
+    this.collect = options.collect ?? collectProjectDocs;
+  }
+
   private bm25?: Bm25Index;
   private building?: Promise<IndexStats>;
   private lastStats?: IndexStats;
@@ -199,12 +219,12 @@ export class ProjectDocsIndex {
   private async build(): Promise<IndexStats> {
     const started = Date.now();
     const previous = await fs
-      .readFile(INDEX_PATH, 'utf8')
+      .readFile(this.indexPath, 'utf8')
       .then((raw) => JSON.parse(raw) as ProjectIndexFile)
       .catch(() => undefined);
     const reusable = previous?.embeddingModel === EMBEDDING_MODEL ? previous : undefined;
 
-    const docs = await collectProjectDocs();
+    const docs = await this.collect();
     const documents: ProjectDocInfo[] = [];
     const chunks: IndexedChunk[] = [];
     const reembedded: string[] = [];
@@ -245,8 +265,8 @@ export class ProjectDocsIndex {
 
     const file: ProjectIndexFile = { version: 1, embeddingModel: EMBEDDING_MODEL, builtAt: new Date().toISOString(), documents, chunks };
     if (reembedded.length || !previous || previous.documents.length !== documents.length) {
-      await fs.mkdir(path.dirname(INDEX_PATH), { recursive: true });
-      await fs.writeFile(INDEX_PATH, JSON.stringify(file));
+      await fs.mkdir(path.dirname(this.indexPath), { recursive: true });
+      await fs.writeFile(this.indexPath, JSON.stringify(file));
     } else {
       file.builtAt = previous.builtAt;
     }

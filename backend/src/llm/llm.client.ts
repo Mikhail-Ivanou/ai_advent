@@ -78,6 +78,12 @@ export interface AskOptions {
    * look things up with the project's git tools.
    */
   projectContext?: string;
+  /**
+   * A role of its own for this call (Day 33: the support assistant) — its
+   * instructions and the context it gathered, sent right after the base
+   * instructions.
+   */
+  systemPrompt?: string;
   /** Tools the model may call while answering. Ignored for JSON-format calls, which are internal extraction steps. */
   tools?: LlmToolset;
 }
@@ -204,6 +210,7 @@ export async function callLlm(prompt: string, options: AskOptions = {}, label = 
 
   const messages: Record<string, unknown>[] = [
     { role: 'system', content: instructions.join(' ') },
+    ...(options.systemPrompt ? [{ role: 'system', content: options.systemPrompt }] : []),
     // Placed before everything else, including personalization: these are
     // hard constraints on the solution space, not a preference — nothing
     // below (style, task, memory, the user's own request) can override them.

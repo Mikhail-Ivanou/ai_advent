@@ -8,6 +8,7 @@ import { Scheduler } from './scheduler.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createResearchServer, createSchedulerServer, createWeatherServer } from './server.js';
 import { createGitServer } from './git.js';
+import { CrmStore, createCrmServer } from './crm.js';
 
 const PORT = Number(process.env.PORT ?? 3002);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -34,6 +35,9 @@ const scheduler = new Scheduler();
 await scheduler.start();
 const pipeline = new Pipeline();
 await pipeline.load();
+// Day 33: one CRM store, so replies written by one request are seen by the next.
+const crm = new CrmStore();
+await crm.load();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -49,6 +53,8 @@ const SERVERS: Record<string, () => McpServer> = {
   research: () => createResearchServer(pipeline),
   // Day 31: the project's git repository for the developer assistant.
   git: () => createGitServer(),
+  // Day 33: users, tickets and gateway events for the support assistant.
+  crm: () => createCrmServer(crm),
 };
 
 // Stateless Streamable HTTP: every POST gets a fresh server + transport, so
