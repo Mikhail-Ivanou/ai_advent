@@ -13,8 +13,10 @@ import { DocumentKind, IndexedChunk, SearchHit } from '../rag/rag.types';
 // backend's HTTP API (generated from the Nest controllers, so it can't go
 // stale), the data schemas (*.types.ts) and the iOS client's Swift sources —
 // small enough to index whole, and its models and gateway client are the
-// app's API description. Chunks of unchanged files are
-// reused by content hash, so a restart re-embeds only what was edited.
+// app's API description. Day 32 adds the source code itself (group "code"),
+// searched only by the code review; /help keeps to the documentation. Chunks
+// of unchanged files are reused by content hash, so a restart re-embeds only
+// what was edited.
 
 export const REPO_DIR = path.resolve(process.env.DEV_ASSISTANT_REPO_DIR?.trim() || path.join(process.cwd(), '..'));
 const INDEX_PATH = path.join(process.cwd(), 'data', 'dev-assistant', 'index.json');
@@ -22,7 +24,17 @@ const STRUCTURAL = { maxSize: 1400, minSize: 300 };
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'data', 'build', 'img']);
 
 /** What a document of the corpus is, for the UI and the model. */
-export type ProjectDocGroup = 'readme' | 'docs' | 'api' | 'schema' | 'ios';
+export type ProjectDocGroup = 'readme' | 'docs' | 'api' | 'schema' | 'ios' | 'code';
+
+/** What /help searches: everything but the source code. */
+export const DOC_GROUPS: ProjectDocGroup[] = ['readme', 'docs', 'api', 'schema', 'ios'];
+
+export interface SearchOptions {
+  /** Only chunks of documents in these groups (default: all). */
+  groups?: ProjectDocGroup[];
+  /** Leave out chunks of these files, e.g. the very file under review. */
+  excludeFiles?: string[];
+}
 
 export interface ProjectDoc {
   /** Repository-relative path; the generated API reference has a virtual one. */
@@ -130,7 +142,7 @@ function docCommentBefore(lines: string[], index: number): string {
     .join(' ');
 }
 
-/** Collects the corpus from the repository: READMEs, docs/, the API reference, data schemas and the iOS app. */
+/** Collects the corpus from the repository: READMEs, docs/, the API reference, data schemas, the iOS app and the source code. */
 export async function collectProjectDocs(): Promise<ProjectDoc[]> {
   const read = async (files: string[], group: ProjectDocGroup) =>
     Promise.all(
@@ -144,6 +156,13 @@ export async function collectProjectDocs(): Promise<ProjectDoc[]> {
     ...(await walk(path.join(REPO_DIR, 'mcp-weather', 'src'), (rel) => rel.endsWith('.types.ts'))),
   ];
   const swift = await walk(path.join(REPO_DIR, 'ios'), (rel) => rel.endsWith('.swift'));
+  const code = (
+    await Promise.all(
+      ['backend/src', 'web/src', 'mcp-weather/src', 'llm-gateway/src'].map((dir) =>
+        walk(path.join(REPO_DIR, dir), (rel) => /\.(ts|tsx|js|mjs)$/.test(rel) && !/\.(types|d)\.ts$/.test(rel)),
+      ),
+    )
+  ).flat();
   const api = await read(controllers, 'api');
   return [
     ...(await read(readmes, 'readme')),
@@ -151,6 +170,7 @@ export async function collectProjectDocs(): Promise<ProjectDoc[]> {
     { path: 'backend/API.md (сгенерировано из контроллеров)', group: 'api', content: describeControllers(api) },
     ...(await read(schemas, 'schema')),
     ...(await read(swift, 'ios')),
+    ...(await read(code, 'code')),
   ];
 }
 
@@ -248,10 +268,16 @@ export class ProjectDocsIndex {
    * reciprocal rank (as in Day 22) — exact names like "llm-gateway" or
    * "TaskMemory" are caught literally, paraphrases by the vectors.
    */
-  async search(query: string, k = 6): Promise<SearchHit[]> {
+  async search(query: string, k = 6, options: SearchOptions = {}): Promise<SearchHit[]> {
     await this.ensure();
     const chunks = this.index!.chunks;
     if (!chunks.length) return [];
+    const groupOf = new Map(this.index!.documents.map((d) => [d.path, d.group]));
+    const excluded = new Set(options.excludeFiles ?? []);
+    const allowed = (i: number) => {
+      const file = chunks[i].metadata.file;
+      return !excluded.has(file) && (!options.groups || options.groups.includes(groupOf.get(file) as ProjectDocGroup));
+    };
     const [q] = await embed([query], 'query');
     const cosine = chunks.map((c) => dot(q.vector, c.embedding));
     const lexical = this.bm25!.scores(query);
@@ -266,9 +292,42 @@ export class ProjectDocsIndex {
     const fused = chunks.map((_, i) => 1 / (60 + vr[i]) + (Number.isFinite(lr[i]) ? 1 / (60 + lr[i]) : 0));
     return fused
       .map((f, i) => ({ f, i }))
+      .filter(({ i }) => allowed(i))
       .sort((a, b) => b.f - a.f)
       .slice(0, k)
       .map(({ i }) => this.hit(i, cosine[i], lexical[i]));
+  }
+
+  /**
+   * "Go to definition" for the code review (Day 32): for each symbol, the
+   * chunk that defines it — a function, method, class, or a quoted id such as
+   * an MCP tool name ('git_log' in registerTool). Literal matching, because
+   * BM25 splits snake_case and embeddings blur identifiers.
+   */
+  async findDefinitions(symbols: string[], options: SearchOptions = {}): Promise<SearchHit[]> {
+    await this.ensure();
+    const chunks = this.index!.chunks;
+    const groupOf = new Map(this.index!.documents.map((d) => [d.path, d.group]));
+    const excluded = new Set(options.excludeFiles ?? []);
+    const hits: SearchHit[] = [];
+    for (const symbol of symbols) {
+      const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const patterns = [
+        new RegExp(`\\b(?:function\\*?|class|interface|type|const|let)\\s+${esc}\\b`),
+        // A method: the name at the start of a line, then (args) and a body or a return type.
+        new RegExp(`^\\s*(?:(?:public|private|protected|static|async|readonly|override)\\s+)*${esc}\\s*(?:<[^>]*>)?\\([^)]*\\)\\s*(?::[^\\n{]+)?\\{`, 'm'),
+        new RegExp(`['"\`]${esc}['"\`]\\s*,`),
+      ];
+      const i = chunks.findIndex((c) => {
+        const file = c.metadata.file;
+        if (excluded.has(file) || (options.groups && !options.groups.includes(groupOf.get(file) as ProjectDocGroup))) return false;
+        return groupOf.get(file) === 'code' || groupOf.get(file) === 'schema' || groupOf.get(file) === 'ios'
+          ? patterns.some((re) => re.test(c.text))
+          : false;
+      });
+      if (i >= 0 && !hits.some((h) => h.metadata.chunk_id === chunks[i].metadata.chunk_id)) hits.push(this.hit(i, 0, 0));
+    }
+    return hits;
   }
 
   /**

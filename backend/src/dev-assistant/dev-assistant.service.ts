@@ -1,8 +1,10 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { callLlm, ChatMessage, LlmUsage, ToolCallLog } from '../llm/llm.client';
 import { SearchHit } from '../rag/rag.types';
+import { renderMarkdown } from '../review/render';
+import { CodeReviewer } from '../review/reviewer';
 import { BranchInfo, GitMcpClient } from './git-mcp.client';
-import { IndexStats, ProjectDocsIndex } from './project-docs';
+import { DOC_GROUPS, IndexStats, ProjectDocsIndex } from './project-docs';
 
 // Day 31: developer assistant. Messages are commands:
 //   /help <question> — answers about the project from its documentation (RAG)
@@ -42,6 +44,7 @@ export const COMMANDS: { name: string; args?: string; description: string }[] = 
   { name: '/status', description: 'незакоммиченные изменения (MCP)' },
   { name: '/files', args: '[каталог]', description: 'структура проекта: каталоги и число файлов (MCP)' },
   { name: '/diff', args: '[ветка]', description: 'изменённые файлы: рабочая копия или ветка относительно указанной (MCP)' },
+  { name: '/review', args: '[ветка]', description: 'AI-ревью изменений текущей ветки и рабочей копии относительно ветки (по умолчанию main): баги, архитектура, рекомендации' },
   { name: '/docs', description: 'что проиндексировано для RAG' },
   { name: '/reindex', description: 'переиндексировать документацию' },
 ];
@@ -60,6 +63,8 @@ export class DevAssistantService implements OnApplicationBootstrap {
   private readonly logger = new Logger(DevAssistantService.name);
   readonly docs = new ProjectDocsIndex();
   readonly git = new GitMcpClient();
+  /** Day 32: shares the project index — documentation and code. */
+  private readonly reviewer = new CodeReviewer(this.docs);
 
   onApplicationBootstrap() {
     // Built in the background: the first /help waits for it if it's still running.
@@ -106,10 +111,19 @@ export class DevAssistantService implements OnApplicationBootstrap {
         return done({ answer: (await this.git.call('git_list_files', { ...(arg ? { path: arg } : {}), depth: 2 })).text });
       case '/diff':
         return done({ answer: (await this.git.call('git_diff', { ...(arg ? { base: arg } : {}), stat_only: true })).text });
+      case '/review': {
+        const result = await this.reviewer.review({ base: arg || 'main', worktree: true, model });
+        return done({ answer: renderMarkdown(result).replace(/^<!--.*-->\n/, ''), model: result.model, usage: result.usage });
+      }
       case '/docs': {
         const s = await this.docs.ensure();
-        const lines = s.documents.map((d) => `• ${d.path} — ${d.chunks} чанк(ов)`);
-        return done({ answer: `В индексе ${s.documents.length} файлов, ${s.chunks} чанков (${s.embeddingModel}):\n${lines.join('\n')}` });
+        const docs = s.documents.filter((d) => d.group !== 'code');
+        const code = s.documents.filter((d) => d.group === 'code');
+        const lines = docs.map((d) => `• ${d.path} — ${d.chunks} чанк(ов)`);
+        const codeChunks = code.reduce((n, d) => n + d.chunks, 0);
+        return done({
+          answer: `В индексе ${s.documents.length} файлов, ${s.chunks} чанков (${s.embeddingModel}).\nДокументация (для /help):\n${lines.join('\n')}\nИсходный код (для /review): ${code.length} файлов, ${codeChunks} чанков.`,
+        });
       }
       case '/reindex': {
         const s = await this.docs.ensure(true);
@@ -134,7 +148,7 @@ export class DevAssistantService implements OnApplicationBootstrap {
     const asked = question || OVERVIEW_QUESTION;
     const [git, found, toolset] = await Promise.all([
       this.gitContext(),
-      this.docs.search(asked, TOP_K),
+      this.docs.search(asked, TOP_K, { groups: DOC_GROUPS }),
       this.git.toolset().catch(() => undefined),
     ]);
     // Found excerpts first, then the README overview unless it was found anyway.
@@ -143,7 +157,7 @@ export class DevAssistantService implements OnApplicationBootstrap {
     const stats = this.docs.stats;
     const projectContext = [
       `Текущее состояние репозитория (MCP git): ${git.text}`,
-      stats ? `Проиндексированная документация: ${stats.documents.map((d) => d.path).join(', ')}` : '',
+      stats ? `Проиндексированная документация: ${stats.documents.filter((d) => d.group !== 'code').map((d) => d.path).join(', ')}` : '',
       `Фрагменты документации:\n${formatExcerpts(hits)}`,
     ]
       .filter(Boolean)
@@ -199,6 +213,10 @@ function summarizeDocs(s: IndexStats) {
     builtAt: s.builtAt,
     embeddingModel: s.embeddingModel,
     chunks: s.chunks,
-    files: s.documents.map((d) => ({ path: d.path, group: d.group, chunks: d.chunks })),
+    files: s.documents.filter((d) => d.group !== 'code').map((d) => ({ path: d.path, group: d.group, chunks: d.chunks })),
+    code: {
+      files: s.documents.filter((d) => d.group === 'code').length,
+      chunks: s.documents.filter((d) => d.group === 'code').reduce((n, d) => n + d.chunks, 0),
+    },
   };
 }

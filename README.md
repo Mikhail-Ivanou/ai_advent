@@ -317,3 +317,42 @@ Env (backend): `DEV_ASSISTANT_MCP_URL` (default `http://localhost:3002/mcp/git`)
 `DEV_ASSISTANT_MCP_TOKEN` (falls back to `MCP_AUTH_TOKEN`), `DEV_ASSISTANT_MODEL`
 (default `LLM_MODEL`), `DEV_ASSISTANT_REPO_DIR` (default: the repo root).
 See [docs/day31-dev-assistant.md](docs/day31-dev-assistant.md).
+
+## Day 32 — AI code review of pull requests
+
+`.github/workflows/ai-review.yml` runs on every PR (opened / pushed /
+reopened, not drafts; also by hand with a PR number) and posts the review
+as a PR comment, updated in place on each push, and as the job summary.
+The review code is `backend/src/review`:
+
+1. **Diff** (`git-diff.ts`): `git diff` from the merge-base with the base
+   branch to the PR head, per file with hunks and new-file line numbers;
+   lockfiles, `.pbxproj`, build output and binaries are skipped.
+2. **RAG** over the project's docs **and code**: the Day 31 index now also
+   holds the sources (`backend/src`, `web/src`, `mcp-weather/src`,
+   `llm-gateway/src`). For each changed file:
+   - a search by meaning (path + added lines): related docs, similar code elsewhere;
+   - a definition lookup of what the added lines call (functions, methods,
+     MCP tool names): their signatures, `async`-ness and schema limits.
+3. **LLM**: one call per batch of files (~40k diff chars). It gets the
+   annotated diff (every line numbered), small changed files in full and the
+   context, and returns JSON findings: `bug` / `architecture` /
+   `recommendation`, with severity, file, line and a fix. A finding pinned to
+   a line outside the diff is dropped (it's about old code).
+4. **Report** (`render.ts`): 🐞 potential bugs, 🏛 architecture problems,
+   💡 recommendations, with links to the lines at the PR head.
+
+Locally, or from the developer assistant (`/review [base]` in
+http://localhost:3000/dev-assistant):
+
+```bash
+npm run review --workspace=backend -- --base main               # HEAD vs main
+npm run review --workspace=backend -- --base main --worktree    # incl. uncommitted and untracked files
+npm run review --workspace=backend -- --base main --out review.md --json review.json --fail-on high
+```
+
+The action needs the secret `LLM_API_KEY`, plus optional variables
+`LLM_API_URL`, `REVIEW_MODEL` (default `deepseek-v4-flash`) and
+`REVIEW_FAIL_ON` (`high` or `medium`, to fail the check on such bugs).
+Locally the model is `--model`, else `REVIEW_MODEL`, else `LLM_MODEL`.
+See [docs/day32-code-review.md](docs/day32-code-review.md).
