@@ -49,6 +49,8 @@ Without it, the context for the demo PR below held neither the `git_log` schema 
 
 The PR's own files are kept out of the context, because the diff already shows them.
 
+This report is excluded from the context too (`EXCLUDED_CONTEXT`; `REVIEW_EXCLUDE_CONTEXT` adds more paths). It lists the problems planted in the demo PR, and once it was indexed the review found all six by reading this table instead of the code. Without it, the result is 4 bugs found precisely (#1–#4) and #5 as a recommendation.
+
 **LLM.** Each batch of files (about 40k characters of diff) gets one call. The prompt contains:
 - the context;
 - small changed files (≤ 16k characters) in full, with line numbers;
@@ -115,6 +117,8 @@ The PR is one commit on top of Day 31 (2 files, +19 −1). It adds a `/log` comm
 What made the difference:
 - The definition lookup put the `git_log` schema and `ensure()` into the context. #1 and #2 cannot be seen from the diff alone.
 - The model. Local 7–12B models do follow the JSON format, but they write general advice instead of reading the code.
+
+In the developer assistant, `/review [base]` renders the same report as formatted Markdown (`web/src/components/ReviewMarkdown.tsx`).
 
 ## Self-review
 

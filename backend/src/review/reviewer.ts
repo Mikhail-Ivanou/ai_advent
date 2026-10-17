@@ -67,6 +67,17 @@ export interface ReviewResult {
   durationMs: number;
 }
 
+/**
+ * Never used as review context: the Day 32 report lists the problems planted
+ * in the demo PR, so with it in the context the model would read the answers
+ * instead of finding them. REVIEW_EXCLUDE_CONTEXT (comma-separated paths)
+ * adds more.
+ */
+const EXCLUDED_CONTEXT = [
+  'docs/day32-code-review.md',
+  ...(process.env.REVIEW_EXCLUDE_CONTEXT ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+];
+
 const MAX_FILE_DIFF = 24_000;
 const FULL_FILE_LIMIT = 16_000;
 const MAX_CONTEXT = 16;
@@ -222,7 +233,8 @@ export class CodeReviewer {
     let model: string | undefined;
 
     for (const [b, batch] of batches.entries()) {
-      const context = await this.contextFor(batch.files, diff.files.map((f) => f.path), options.contextPerFile ?? 3);
+      const excludeFiles = [...diff.files.map((f) => f.path), ...EXCLUDED_CONTEXT];
+      const context = await this.contextFor(batch.files, excludeFiles, options.contextPerFile ?? 3);
       log(`батч ${b + 1}/${batches.length}: ${batch.files.length} файлов, контекст ${context.length} фрагментов → LLM`);
       const prompt = buildPrompt(batch.files, context);
       let parsed: { summary?: unknown; findings?: unknown } | undefined;
@@ -312,7 +324,7 @@ export class CodeReviewer {
    * Chunks of the PR's own files are left out: the diff already shows them,
    * and in the working copy the index holds their new version.
    */
-  private async contextFor(files: ChangedFile[], changed: string[], perFile: number): Promise<SearchHit[]> {
+  private async contextFor(files: ChangedFile[], excludeFiles: string[], perFile: number): Promise<SearchHit[]> {
     const picked = new Map<string, SearchHit>();
     const add = (hits: SearchHit[]) => hits.forEach((h) => picked.has(h.metadata.chunk_id) || picked.set(h.metadata.chunk_id, h));
     for (const file of files) {
@@ -322,9 +334,9 @@ export class CodeReviewer {
         .map((l) => l.slice(1).trim())
         .filter(Boolean)
         .join('\n');
-      add(await this.index.search(`${file.path}\n${added.slice(0, 1200)}`, perFile, { excludeFiles: changed }));
+      add(await this.index.search(`${file.path}\n${added.slice(0, 1200)}`, perFile, { excludeFiles }));
       const symbols = usedSymbols(added);
-      if (symbols.length) add(await this.index.findDefinitions(symbols.slice(0, 6), { excludeFiles: changed }));
+      if (symbols.length) add(await this.index.findDefinitions(symbols.slice(0, 6), { excludeFiles }));
     }
     return [...picked.values()].slice(0, MAX_CONTEXT);
   }

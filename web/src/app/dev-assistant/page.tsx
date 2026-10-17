@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { MODELS } from '@/app/models';
+import { ReviewMarkdown } from '@/components/ReviewMarkdown';
 
 // Day 31: developer assistant — /help answers questions about this project
 // from its documentation (RAG over README, docs/, the API and data schemas)
@@ -44,6 +45,7 @@ const EXAMPLES = [
   '/help что изменено в текущей ветке и зачем?',
   '/branch',
   '/files backend/src',
+  '/review main',
 ];
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -158,7 +160,7 @@ export default function DevAssistantPage() {
               <AssistantReply key={i} reply={entry.reply} />
             ),
           )}
-          {busy && <p className="text-sm text-[#5c5c5c]">Смотрю документацию и репозиторий…</p>}
+          {busy && <p className="text-sm text-[#5c5c5c]">{entries[entries.length - 1]?.role === 'user' && (entries[entries.length - 1] as { content: string }).content.startsWith('/review') ? 'Читаю diff, подбираю контекст из документации и кода, ревьюю… (обычно 30–90 с)' : 'Смотрю документацию и репозиторий…'}</p>}
           <div ref={bottom} />
         </div>
 
@@ -278,7 +280,7 @@ function BranchBadge({ branch, error }: { branch?: Branch; error?: string }) {
 function AssistantReply({ reply }: { reply: Reply }) {
   return (
     <div className="max-w-[95%] rounded-lg border border-black/10 bg-paper px-3 py-2 text-sm">
-      <p className="whitespace-pre-wrap">{reply.answer}</p>
+      {reply.command === '/review' ? <ReviewMarkdown text={reply.answer} /> : <p className="whitespace-pre-wrap">{reply.answer}</p>}
       {reply.gitError && <p className="mt-1 text-xs text-amber-700">git: {reply.gitError}</p>}
       {reply.sources && reply.sources.length > 0 && (
         <details className="mt-2 text-xs">
